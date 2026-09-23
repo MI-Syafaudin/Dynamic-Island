@@ -1,0 +1,42 @@
+{
+  "position": "top-center",
+  "margin_top": 8,
+  "idle_width": 260,
+  "idle_height": 34,
+  "corner_radius": 17,
+  "opacity": 0.92,
+  "animation_duration_ms": 220,
+  "font_family": "FiraCode Nerd Font, JetBrainsMono Nerd Font, Sans",
+  "font_size": 11,
+  "colors": {
+    "background": "#111111",
+    "border": "#2c2c2e",
+    "text": "#ffffff",
+    "subtext": "#8e8e93",
+    "accent": "#38ef7d",
+    "accent_blue": "#0a84ff",
+    "warning": "#ffd60a",
+    "danger": "#ff453a",
+    "card_bg": "#1c1c1e"
+  },
+  "modules": {
+    "clock": true,
+    "workspace": true,
+    "active_window": true,
+    "audio": true,
+    "media": true,
+    "battery": true,
+    "network": true,
+    "system": true,
+    "screenshot": true,
+    "notification": true,
+    "quickaction": true
+  },
+  "timeouts": {
+    "volume_ms": 2000,
+    "brightness_ms": 2000,
+    "notification_ms": 4500,
+    "screenshot_ms": 2800,
+    "auto_collapse_ms": 5000
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "theme_name": "amoled_black",
+  "colors": {
+    "background": "#000000",
+    "border": "#222222",
+    "text": "#ffffff",
+    "subtext": "#999999",
+    "accent": "#ffffff",
+    "accent_blue": "#0a84ff",
+    "warning": "#ffd60a",
+    "danger": "#ff453a",
+    "card_bg": "#111111"
+  }
+}

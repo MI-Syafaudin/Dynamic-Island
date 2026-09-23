@@ -1,0 +1,14 @@
+{
+  "theme_name": "midnight_blue",
+  "colors": {
+    "background": "#0b0f19",
+    "border": "#1c2538",
+    "text": "#f0f6fc",
+    "subtext": "#7d8590",
+    "accent": "#58a6ff",
+    "accent_blue": "#1f6feb",
+    "warning": "#e3b341",
+    "danger": "#f85149",
+    "card_bg": "#161b22"
+  }
+}

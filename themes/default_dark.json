@@ -1,0 +1,14 @@
+{
+  "theme_name": "default_dark",
+  "colors": {
+    "background": "#111111",
+    "border": "#2c2c2e",
+    "text": "#ffffff",
+    "subtext": "#8e8e93",
+    "accent": "#38ef7d",
+    "accent_blue": "#0a84ff",
+    "warning": "#ffd60a",
+    "danger": "#ff453a",
+    "card_bg": "#1c1c1e"
+  }
+}
