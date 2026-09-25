@@ -72,6 +72,7 @@ int main(int argc, char** argv) {
 
     std::signal(SIGINT, sig_handler);
     std::signal(SIGTERM, sig_handler);
+    std::signal(SIGHUP, SIG_IGN);
 
     std::cout << "[Dynamic Island] Initializing native Wayland Layer Shell...\n";
     if (!app.init()) {

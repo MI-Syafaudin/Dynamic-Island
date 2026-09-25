@@ -27,6 +27,39 @@ void Renderer::update_font(const Config& config) {
     m_font_desc = pango_font_description_from_string(font_spec.c_str());
 }
 
+int Renderer::calculate_compact_width(
+    const Config& config,
+    const std::vector<std::shared_ptr<ModuleBase>>& modules
+) {
+    if (!m_font_desc) return config.idle_width;
+
+    cairo_surface_t* surface = cairo_recording_surface_create(CAIRO_CONTENT_COLOR_ALPHA, nullptr);
+    if (!surface) return config.idle_width;
+
+    cairo_t* cr = cairo_create(surface);
+    if (!cr) {
+        cairo_surface_destroy(surface);
+        return config.idle_width;
+    }
+
+    int current_x = 14;
+    int y = 0;
+    int h = config.idle_height;
+    std::vector<HitBox> dummy_hitboxes;
+
+    for (const auto& mod : modules) {
+        if (mod) {
+            mod->draw_compact(cr, m_font_desc, config, current_x, y, h, dummy_hitboxes);
+        }
+    }
+
+    cairo_destroy(cr);
+    cairo_surface_destroy(surface);
+
+    int total_w = current_x + 4;
+    return total_w;
+}
+
 void Renderer::draw_rounded_rect(cairo_t* cr, double x, double y, double w, double h, double r) {
     r = std::min(r, std::min(w / 2.0, h / 2.0));
     cairo_new_sub_path(cr);
@@ -126,8 +159,12 @@ void Renderer::render_island(
     cairo_restore(cr);
 
     // 3. Render contents depending on mode
+    cairo_save(cr);
+    draw_rounded_rect(cr, 1.0, 1.0, width - 2.0, height - 2.0, corner_radius);
+    cairo_clip(cr);
+
     if (mode == IslandMode::Idle) {
-        int current_x = 12;
+        int current_x = 14;
         int y = 0;
         int h = height;
 
@@ -186,6 +223,7 @@ void Renderer::render_island(
                 break;
         }
     }
+    cairo_restore(cr);
 }
 
 } // namespace di

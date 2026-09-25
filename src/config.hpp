@@ -62,6 +62,12 @@ public:
     std::string font_family = "FiraCode Nerd Font, JetBrainsMono Nerd Font, Sans";
     int font_size = 11;
 
+    std::string layer = "overlay";
+    bool hide_on_fullscreen = false;
+    bool adaptive_width = true;
+    int max_idle_width = 850;
+    int max_window_title_length = 28;
+
     ThemeColors colors;
     ModuleSettings modules;
     TimeoutSettings timeouts;

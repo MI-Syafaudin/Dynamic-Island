@@ -17,6 +17,11 @@ public:
     bool init(const Config& config);
     void update_font(const Config& config);
 
+    int calculate_compact_width(
+        const Config& config,
+        const std::vector<std::shared_ptr<ModuleBase>>& modules
+    );
+
     void render_island(
         cairo_t* cr,
         int width,

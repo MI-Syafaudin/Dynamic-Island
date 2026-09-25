@@ -139,10 +139,18 @@ WaylandBackend::~WaylandBackend() {
     cleanup();
 }
 
-bool WaylandBackend::init(int width, int height, int margin_top) {
+uint32_t WaylandBackend::get_layer_enum() const {
+    if (m_layer == "top") {
+        return ZWLR_LAYER_SHELL_V1_LAYER_TOP;
+    }
+    return ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY;
+}
+
+bool WaylandBackend::init(int width, int height, int margin_top, const std::string& layer) {
     m_width = width;
     m_height = height;
     m_margin_top = margin_top;
+    m_layer = layer;
 
     m_display = wl_display_connect(nullptr);
     if (!m_display) {
@@ -167,7 +175,7 @@ bool WaylandBackend::init(int width, int height, int margin_top) {
 
     m_layer_surface = zwlr_layer_shell_v1_get_layer_surface(
         m_layer_shell, m_surface, nullptr,
-        ZWLR_LAYER_SHELL_V1_LAYER_TOP, "dynamic-island"
+        get_layer_enum(), "dynamic-island"
     );
     if (!m_layer_surface) {
         std::cerr << "Error: Failed to create layer surface." << std::endl;
@@ -304,12 +312,15 @@ void WaylandBackend::set_margin_top(int margin) {
 }
 
 void WaylandBackend::set_visible(bool visible) {
+    if (m_visible == visible) return;
     m_visible = visible;
     if (m_layer_surface) {
-        if (visible) {
-            zwlr_layer_surface_v1_set_layer(m_layer_surface, ZWLR_LAYER_SHELL_V1_LAYER_TOP);
-        } else {
-            zwlr_layer_surface_v1_set_layer(m_layer_surface, ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND);
+        if (m_layer_shell_version >= 2) {
+            if (visible) {
+                zwlr_layer_surface_v1_set_layer(m_layer_surface, get_layer_enum());
+            } else {
+                zwlr_layer_surface_v1_set_layer(m_layer_surface, ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND);
+            }
         }
         wl_surface_commit(m_surface);
     }
@@ -322,7 +333,6 @@ void WaylandBackend::handle_configure(uint32_t serial, uint32_t width, uint32_t 
 }
 
 void WaylandBackend::handle_registry_global(struct wl_registry* registry, uint32_t name, const char* interface, uint32_t version) {
-    (void)version;
     if (std::strcmp(interface, wl_compositor_interface.name) == 0) {
         m_compositor = static_cast<struct wl_compositor*>(
             wl_registry_bind(registry, name, &wl_compositor_interface, 4));
@@ -330,8 +340,9 @@ void WaylandBackend::handle_registry_global(struct wl_registry* registry, uint32
         m_shm = static_cast<struct wl_shm*>(
             wl_registry_bind(registry, name, &wl_shm_interface, 1));
     } else if (std::strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0) {
+        m_layer_shell_version = std::min(version, 4u);
         m_layer_shell = static_cast<struct zwlr_layer_shell_v1*>(
-            wl_registry_bind(registry, name, &zwlr_layer_shell_v1_interface, 1));
+            wl_registry_bind(registry, name, &zwlr_layer_shell_v1_interface, m_layer_shell_version));
     } else if (std::strcmp(interface, wl_seat_interface.name) == 0) {
         m_seat = static_cast<struct wl_seat*>(
             wl_registry_bind(registry, name, &wl_seat_interface, 5));

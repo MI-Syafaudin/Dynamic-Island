@@ -15,17 +15,18 @@ Proyek ini dibangun dari awal dengan fokus utama pada **efisiensi ekstrem**, **k
 | **Beban GPU (Vega 3)** | Tinggi (Chromium Compositor) | Sedang (OpenGL/Vulkan shaders) | **Nol / Sangat Ringan (Wayland SHM Direct)** |
 | **Startup Time** | 1.5s – 3.0s | 500ms – 1.0s | **< 5 milidetik (Instant)** |
 | **Ukuran Binary** | 150 MB+ | 30 MB+ | **378 KB (Bisa di-strip ke ~180 KB)** |
-| **Wayland Layer Shell** | Tidak native / hacky | Perlu plugin eksternal | **Native Protocol (`zwlr_layer_shell_v1`)** |
+| **Wayland Layer Shell** | Tidak native / hacky | Perlu plugin eksternal | **Native Protocol (`zwlr_layer_shell_v1` Overlay)** |
 
 ### Mengapa Sangat Ringan?
 1. **Zero Browser Engine**: Tidak ada Node.js, V8, Chromium, maupun WebKit.
-2. **Direct Wayland Layer Shell**: Menggunakan protokol native `zwlr_layer_shell_v1` dari wlroots/Hyprland. Jendela diletakkan di layer `TOP` dengan anchor di tengah atas (`ANCHOR_TOP`), margin atas dapat disesuaikan, dan `exclusive_zone = 0` sehingga bar mengambang bebas tanpa memangkas ruang vertikal aplikasi tiling.
+2. **Direct Wayland Layer Shell**: Menggunakan protokol native `zwlr_layer_shell_v1` dari wlroots/Hyprland. Jendela diletakkan di layer `OVERLAY` dengan anchor di tengah atas (`ANCHOR_TOP`), margin atas dapat disesuaikan, dan `exclusive_zone = 0` sehingga bar mengambang bebas. Dynamic Island tetap tampak di atas jendela biasa maupun video full screen (baik pemutar video lokal seperti mpv/VLC maupun streaming browser seperti YouTube).
 3. **Double-Buffered Cairo Graphics**: Menggambar antialiased pill, sudut membulat, dan tipografi subpixel langsung ke shared-memory buffer (`wl_shm`). Compositor Hyprland membacanya secara zero-copy.
 4. **Sinkronisasi Frame 60 Hz**: Animasi di-drive oleh callback VSync Wayland (`wl_surface_frame`), bukan `usleep` atau loop timer yang membebani CPU. Begitu animasi selesai, registrasi frame dihentikan total sehingga CPU langsung tidur (*zero wakeups*).
 5. **Event-Driven IPC**:
    - Status workspace, fokus window, dan fullscreen didapat langsung secara real-time melalui push event dari Hyprland socket2 (`$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock`).
    - Tidak ada polling terus-menerus terhadap `hyprctl`.
    - Modul system monitor (CPU/RAM/GPU) bersifat **lazy**: tidak membaca `/proc/stat` saat idle, dan hanya membaca data setiap 1.5 detik saat mode `Expanded_System` sedang dibuka oleh user.
+6. **Adaptive Dynamic Width**: Lebar Dynamic Island saat idle/compact tidak kaku/statis, melainkan menghitung kebutuhan ruang modul secara dinamis menggunakan perekaman layout Pango-Cairo dan menganimasikannya secara halus (cubic ease-out 60 FPS). Status program aktif maupun modul lain tidak akan terpotong setengah.
 
 ---
 
@@ -88,7 +89,7 @@ dynamic_island/
 | :--- | :--- | :--- |
 | **1. Clock** | Jam & Menit (HH:MM). | Klik untuk ekspansi: Jam digital besar, Hari, Tanggal lengkap, dan Uptime sistem. |
 | **2. Workspace Hyprland** | Menampilkan workspace aktif (1, 2, [3], 4, 5). Workspace saat ini disorot dengan pill accent. | Klik pada nomor workspace untuk berpindah langsung (`hyprctl dispatch workspace N`). Update realtime via socket2. |
-| **3. Active Window** | Menampilkan class/nama window aktif (misal `kitty`, `neovim`, `LibreWolf`). | Terhubung dengan event `activewindow>>` Hyprland socket2. |
+| **3. Active Window** | Menampilkan class/nama window aktif (misal `kitty`, `google-chrome`, `Visual Studio Code`). Lebar Dynamic Island menyesuaikan panjang nama/status program aktif secara otomatis (adaptive width) sehingga teks tidak terpotong setengah. | Terhubung dengan event `activewindow>>` Hyprland socket2. |
 | **4. Audio Control** | Terhubung ke PipeWire / WirePlumber via `wpctl`. Menampilkan persentase & status mute. | Otomatis ekspansi saat volume berubah. Scroll mouse pada island untuk atur volume. Klik untuk toggle mute. |
 | **5. Media Player** | Integrasi MPRIS (`playerctl`). Menampilkan judul lagu yang sedang diputar. | Klik untuk ekspansi: Info artis & tombol kendali `[⏮ Prev]`, `[⏯ Play/Pause]`, `[⏭ Next]`. |
 | **6. Battery Status** | Membaca sysfs laptop (`/sys/class/power_supply/BAT*`). Menampilkan icon petir saat charging. | Indikator visual berubah merah saat baterai ≤ 20%. |
@@ -169,6 +170,11 @@ dynamic-island reload
   "animation_duration_ms": 220,
   "font_family": "FiraCode Nerd Font, JetBrainsMono Nerd Font, Sans",
   "font_size": 11,
+  "layer": "overlay",
+  "hide_on_fullscreen": false,
+  "adaptive_width": true,
+  "max_idle_width": 850,
+  "max_window_title_length": 28,
   "colors": {
     "background": "#111111",
     "border": "#2c2c2e",
@@ -202,6 +208,17 @@ dynamic-island reload
   }
 }
 ```
+
+### Opsi Konfigurasi Penting:
+| Parameter | Default | Keterangan |
+| :--- | :--- | :--- |
+| `layer` | `"overlay"` | Layer Wayland Layer Shell (`"overlay"` atau `"top"`). Layer `overlay` menjamin Dynamic Island tetap mengambang di atas video fullscreen maupun game. |
+| `hide_on_fullscreen` | `false` | Menentukan apakah Dynamic Island disembunyikan saat aplikasi fullscreen aktif. Default `false` agar tetap tampak saat menonton video lokal (mpv/vlc) atau streaming browser (YouTube/Netflix). Ubah ke `true` jika ingin menyembunyikan bar saat fullscreen. |
+| `adaptive_width` | `true` | Otomatis mengukur dan menyesuaikan lebar Dynamic Island secara dinamis mengikuti status dan nama program/jendela aktif tanpa terpotong setengah. |
+| `idle_width` | `260` | Lebar baseline (minimal) Dynamic Island saat mode idle. |
+| `max_idle_width` | `850` | Batas maksimum lebar ekspansi dinamis saat mode idle agar tidak memenuhi layar. |
+| `max_window_title_length` | `28` | Panjang maksimum karakter judul/class window aktif sebelum dipotong dengan `..`. |
+
 
 ---
 

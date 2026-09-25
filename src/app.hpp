@@ -95,6 +95,8 @@ private:
 
     std::string handle_ipc_command(const std::string& cmd, const std::vector<std::string>& args);
     void get_target_dimensions(IslandMode mode, double& w, double& h);
+    double calculate_idle_width();
+    void update_idle_dimensions(bool animate = true);
     void query_brightness();
 };
 

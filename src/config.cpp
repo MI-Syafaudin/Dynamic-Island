@@ -59,6 +59,12 @@ bool Config::load_default() {
     font_family = "FiraCode Nerd Font, JetBrainsMono Nerd Font, Sans";
     font_size = 11;
 
+    layer = "overlay";
+    hide_on_fullscreen = false;
+    adaptive_width = true;
+    max_idle_width = 850;
+    max_window_title_length = 28;
+
     colors.background = ColorRGBA::from_hex("#111111", opacity);
     colors.border = ColorRGBA::from_hex("#2c2c2e", 0.7);
     colors.text = ColorRGBA::from_hex("#ffffff", 1.0);
@@ -100,6 +106,12 @@ bool Config::load_from_file(const std::string& path) {
     if (root.has("animation_duration_ms")) animation_duration_ms = root["animation_duration_ms"].as_int(animation_duration_ms);
     if (root.has("font_family")) font_family = root["font_family"].as_string(font_family);
     if (root.has("font_size")) font_size = root["font_size"].as_int(font_size);
+
+    if (root.has("layer")) layer = root["layer"].as_string(layer);
+    if (root.has("hide_on_fullscreen")) hide_on_fullscreen = root["hide_on_fullscreen"].as_bool(hide_on_fullscreen);
+    if (root.has("adaptive_width")) adaptive_width = root["adaptive_width"].as_bool(adaptive_width);
+    if (root.has("max_idle_width")) max_idle_width = root["max_idle_width"].as_int(max_idle_width);
+    if (root.has("max_window_title_length")) max_window_title_length = root["max_window_title_length"].as_int(max_window_title_length);
 
     if (root.has("colors") && root["colors"].is_object()) {
         const auto& c = root["colors"];

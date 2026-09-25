@@ -27,7 +27,7 @@ public:
     WaylandBackend();
     ~WaylandBackend();
 
-    bool init(int width, int height, int margin_top);
+    bool init(int width, int height, int margin_top, const std::string& layer = "overlay");
     void cleanup();
 
     void resize(int width, int height);
@@ -77,8 +77,12 @@ private:
     int m_width = 260;
     int m_height = 34;
     int m_margin_top = 8;
+    std::string m_layer = "overlay";
+    uint32_t m_layer_shell_version = 1;
     bool m_configured = false;
     bool m_visible = true;
+
+    uint32_t get_layer_enum() const;
 
     WaylandBuffer m_buffers[2];
     int m_current_buffer_idx = 0;

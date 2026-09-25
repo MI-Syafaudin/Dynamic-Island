@@ -9,6 +9,9 @@ WindowModule::WindowModule() {
 }
 
 void WindowModule::refresh_active_window() {
+    m_class.clear();
+    m_title.clear();
+
     FILE* fp = popen("hyprctl activewindow -j 2>/dev/null", "r");
     if (!fp) return;
 
@@ -51,8 +54,9 @@ void WindowModule::draw_compact(cairo_t* cr, PangoFontDescription* font_desc, co
     std::string display_name = m_class.empty() ? m_title : m_class;
     if (display_name.empty()) return;
 
-    if (display_name.length() > 14) {
-        display_name = display_name.substr(0, 12) + "..";
+    if (config.max_window_title_length > 0 && static_cast<int>(display_name.length()) > config.max_window_title_length) {
+        int keep = std::max(1, config.max_window_title_length - 2);
+        display_name = display_name.substr(0, keep) + "..";
     }
 
     PangoLayout* layout = pango_cairo_create_layout(cr);

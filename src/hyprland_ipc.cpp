@@ -108,6 +108,8 @@ void HyprlandIpc::process_incoming() {
                     std::string app_class = data.substr(0, comma);
                     std::string app_title = data.substr(comma + 1);
                     m_on_window(app_class, app_title);
+                } else {
+                    m_on_window("", "");
                 }
             } else if (event == "fullscreen" && m_on_fullscreen) {
                 bool is_fs = (data == "1");

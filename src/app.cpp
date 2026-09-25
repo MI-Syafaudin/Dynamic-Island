@@ -47,11 +47,18 @@ bool App::init(const std::string& config_path) {
         m_bat_mod, m_net_mod, m_sys_mod, m_shot_mod, m_notif_mod, m_quick_mod
     };
 
-    if (!m_wayland.init(m_config.idle_width, m_config.idle_height, m_config.margin_top)) {
+    m_renderer.init(m_config);
+
+    double initial_w = calculate_idle_width();
+    m_curr_w = initial_w;
+    m_target_w = initial_w;
+    m_curr_h = m_config.idle_height;
+    m_target_h = m_config.idle_height;
+
+    if (!m_wayland.init(static_cast<int>(m_curr_w), static_cast<int>(m_curr_h), m_config.margin_top, m_config.layer)) {
         return false;
     }
 
-    m_renderer.init(m_config);
     m_ipc_server.start();
 
     setup_callbacks();
@@ -116,20 +123,22 @@ void App::setup_callbacks() {
     m_hyprland_ipc.set_workspace_callback([this](int ws) {
         if (m_ws_mod) {
             m_ws_mod->set_active_workspace(ws);
-            render_current_state();
+            update_idle_dimensions(true);
         }
     });
 
     m_hyprland_ipc.set_window_callback([this](const std::string& cls, const std::string& title) {
         if (m_win_mod) {
             m_win_mod->set_active_window(cls, title);
-            render_current_state();
+            update_idle_dimensions(true);
         }
     });
 
     m_hyprland_ipc.set_fullscreen_callback([this](bool fs) {
         m_is_fullscreen = fs;
-        m_wayland.set_visible(!fs);
+        if (m_config.hide_on_fullscreen) {
+            m_wayland.set_visible(!fs);
+        }
     });
 
     // CLI IPC Server callback
@@ -138,10 +147,48 @@ void App::setup_callbacks() {
     });
 }
 
+double App::calculate_idle_width() {
+    if (!m_config.adaptive_width) {
+        return m_config.idle_width;
+    }
+    int content_w = m_renderer.calculate_compact_width(m_config, m_modules);
+    double target = std::max(static_cast<double>(m_config.idle_width), static_cast<double>(content_w));
+    if (m_config.max_idle_width > 0) {
+        target = std::min(target, static_cast<double>(m_config.max_idle_width));
+    }
+    return target;
+}
+
+void App::update_idle_dimensions(bool animate) {
+    if (m_mode != IslandMode::Idle) return;
+
+    double needed_w = calculate_idle_width();
+    if (std::abs(needed_w - m_target_w) > 2.0) {
+        if (animate) {
+            m_start_w = m_curr_w;
+            m_start_h = m_curr_h;
+            m_target_w = needed_w;
+            m_target_h = m_config.idle_height;
+            m_animating = true;
+            m_anim_start = std::chrono::steady_clock::now();
+            m_wayland.request_frame_callback();
+        } else {
+            m_curr_w = needed_w;
+            m_target_w = needed_w;
+            m_curr_h = m_config.idle_height;
+            m_target_h = m_config.idle_height;
+            m_wayland.resize(static_cast<int>(m_curr_w), static_cast<int>(m_curr_h));
+            render_current_state();
+        }
+    } else {
+        render_current_state();
+    }
+}
+
 void App::get_target_dimensions(IslandMode mode, double& w, double& h) {
     switch (mode) {
         case IslandMode::Idle:
-            w = m_config.idle_width;
+            w = calculate_idle_width();
             h = m_config.idle_height;
             break;
         case IslandMode::Expanded_Audio:
@@ -426,11 +473,14 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
         notify(app_name, msg);
         return "OK";
     }
+    if (cmd == "ping") {
+        return "pong";
+    }
     if (cmd == "reload") {
         m_config.load_from_file(Config::get_default_config_path());
         m_renderer.update_font(m_config);
         m_wayland.set_margin_top(m_config.margin_top);
-        render_current_state();
+        update_idle_dimensions(false);
         return "Config reloaded";
     }
     if (cmd == "quit") {
@@ -491,9 +541,20 @@ void App::run() {
         if (ret > 0) {
             bool wl_readable = false;
             for (int i = 0; i < nfds; ++i) {
-                if (fds[i].fd == wl_fd && (fds[i].revents & POLLIN)) {
-                    wl_readable = true;
+                if (fds[i].fd == wl_fd) {
+                    if (fds[i].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+                        m_running = false;
+                        break;
+                    }
+                    if (fds[i].revents & POLLIN) {
+                        wl_readable = true;
+                    }
                 }
+            }
+
+            if (!m_running) {
+                m_wayland.cancel_read();
+                break;
             }
 
             if (wl_readable) {
@@ -547,8 +608,10 @@ void App::run() {
             if (m_media_mod) {
                 m_media_mod->update();
             }
-            if (m_mode == IslandMode::Expanded_Media || m_mode == IslandMode::Idle) {
+            if (m_mode == IslandMode::Expanded_Media) {
                 render_current_state();
+            } else if (m_mode == IslandMode::Idle) {
+                update_idle_dimensions(true);
             }
         }
 
@@ -558,7 +621,7 @@ void App::run() {
             if (m_bat_mod) m_bat_mod->update();
             if (m_net_mod) m_net_mod->update();
             if (m_mode == IslandMode::Idle) {
-                render_current_state();
+                update_idle_dimensions(true);
             }
         }
     }

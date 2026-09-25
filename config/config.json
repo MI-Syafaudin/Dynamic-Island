@@ -8,6 +8,11 @@
   "animation_duration_ms": 220,
   "font_family": "FiraCode Nerd Font, JetBrainsMono Nerd Font, Sans",
   "font_size": 11,
+  "layer": "overlay",
+  "hide_on_fullscreen": false,
+  "adaptive_width": true,
+  "max_idle_width": 850,
+  "max_window_title_length": 28,
   "colors": {
     "background": "#111111",
     "border": "#2c2c2e",
