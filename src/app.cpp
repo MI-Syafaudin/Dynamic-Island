@@ -66,6 +66,7 @@ bool App::init(const std::string& config_path) {
 
     auto now = std::chrono::steady_clock::now();
     m_last_clock_update = now;
+    m_last_system_update = now;
     m_last_media_update = now;
     m_last_slow_update = now;
 
@@ -241,6 +242,11 @@ void App::expand_to(IslandMode mode, int timeout_ms) {
 
     m_animating = true;
     m_anim_start = std::chrono::steady_clock::now();
+
+    if (mode == IslandMode::Expanded_System && m_sys_mod) {
+        m_sys_mod->update();
+        m_last_system_update = m_anim_start;
+    }
 
     if (timeout_ms > 0) {
         m_has_auto_collapse = true;
@@ -476,6 +482,9 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
     if (cmd == "ping") {
         return "pong";
     }
+    if (cmd == "version") {
+        return "Dynamic Island for Hyprland v1.1\nAuthor: MI-Syafaudin\nGitHub: https://github.com/MI-Syafaudin/Dynamic-Island\n";
+    }
     if (cmd == "reload") {
         m_config.load_from_file(Config::get_default_config_path());
         m_renderer.update_font(m_config);
@@ -596,10 +605,15 @@ void App::run() {
             }
         }
 
-        // Periodic System Monitor update (only when expanded!)
-        if (m_mode == IslandMode::Expanded_System && m_sys_mod) {
+        // Periodic System Monitor update (both Idle compact and Expanded_System)
+        if (m_sys_mod && std::chrono::duration_cast<std::chrono::milliseconds>(now - m_last_system_update).count() >= 1500) {
+            m_last_system_update = now;
             m_sys_mod->update();
-            render_current_state();
+            if (m_mode == IslandMode::Expanded_System) {
+                render_current_state();
+            } else if (m_mode == IslandMode::Idle) {
+                update_idle_dimensions(false);
+            }
         }
 
         // Periodic Media status update (every 2s)

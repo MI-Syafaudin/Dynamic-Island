@@ -20,6 +20,7 @@ private:
     int m_active_workspace = 1;
     std::vector<int> m_visible_workspaces;
     void refresh_active_workspace();
+    void update_visible_workspaces();
 };
 
 } // namespace di

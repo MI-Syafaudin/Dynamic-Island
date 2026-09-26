@@ -8,13 +8,25 @@
 namespace di {
 
 WorkspaceModule::WorkspaceModule() {
-    m_visible_workspaces = {1, 2, 3, 4, 5};
     refresh_active_workspace();
+    update_visible_workspaces();
+}
+
+void WorkspaceModule::update_visible_workspaces() {
+    m_visible_workspaces.clear();
+    if (m_active_workspace <= 3) {
+        m_visible_workspaces = {1, 2, 3};
+    } else {
+        m_visible_workspaces = {m_active_workspace - 1, m_active_workspace, m_active_workspace + 1};
+    }
 }
 
 void WorkspaceModule::refresh_active_workspace() {
     FILE* fp = popen("hyprctl activeworkspace -j 2>/dev/null", "r");
-    if (!fp) return;
+    if (!fp) {
+        update_visible_workspaces();
+        return;
+    }
 
     char buffer[256];
     std::string result;
@@ -31,11 +43,13 @@ void WorkspaceModule::refresh_active_workspace() {
             if (ws > 0) m_active_workspace = ws;
         }
     }
+    update_visible_workspaces();
 }
 
 void WorkspaceModule::set_active_workspace(int ws) {
     if (ws > 0) {
         m_active_workspace = ws;
+        update_visible_workspaces();
     }
 }
 

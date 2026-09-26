@@ -29,6 +29,9 @@ private:
     unsigned long long m_prev_work_jiffies = 0;
 
     std::string m_gpu_busy_path;
+    std::string m_intel_act_freq_path;
+    std::string m_intel_max_freq_path;
+    std::string m_gpu_name = "(Radeon Vega 3)";
 
     void update_cpu();
     void update_ram();

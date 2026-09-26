@@ -1,5 +1,10 @@
 # Dynamic Island untuk Hyprland (Wayland Native)
 
+**Author & Creator**: [MI-Syafaudin](https://github.com/MI-Syafaudin)  
+[![Author](https://img.shields.io/badge/Author-MI--Syafaudin-blue.svg)](https://github.com/MI-Syafaudin)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Wayland%20%7C%20Hyprland-purple.svg)](https://hyprland.org)
+[![Language](https://img.shields.io/badge/C%2B%2B-20-orange.svg)](https://en.wikipedia.org/wiki/C%2B%2B20)
+
 Sebuah topbar bergaya **"Dynamic Island"** (terinspirasi dari Apple Dynamic Island) yang dirancang khusus untuk Linux desktop berbasis **CachyOS / Arch Linux**, **Hyprland**, dan **Wayland**.
 
 Proyek ini dibangun dari awal dengan fokus utama pada **efisiensi ekstrem**, **konsumsi RAM ultra-rendah (<20 MB)**, **penggunaan CPU mendekati 0.0% saat idle**, serta animasi yang smooth pada hardware hemat daya seperti **AMD Ryzen 3 3200U** dengan **Radeon Vega 3 Integrated Graphics** dan RAM 4 GB.
@@ -22,10 +27,9 @@ Proyek ini dibangun dari awal dengan fokus utama pada **efisiensi ekstrem**, **k
 2. **Direct Wayland Layer Shell**: Menggunakan protokol native `zwlr_layer_shell_v1` dari wlroots/Hyprland. Jendela diletakkan di layer `OVERLAY` dengan anchor di tengah atas (`ANCHOR_TOP`), margin atas dapat disesuaikan, dan `exclusive_zone = 0` sehingga bar mengambang bebas. Dynamic Island tetap tampak di atas jendela biasa maupun video full screen (baik pemutar video lokal seperti mpv/VLC maupun streaming browser seperti YouTube).
 3. **Double-Buffered Cairo Graphics**: Menggambar antialiased pill, sudut membulat, dan tipografi subpixel langsung ke shared-memory buffer (`wl_shm`). Compositor Hyprland membacanya secara zero-copy.
 4. **Sinkronisasi Frame 60 Hz**: Animasi di-drive oleh callback VSync Wayland (`wl_surface_frame`), bukan `usleep` atau loop timer yang membebani CPU. Begitu animasi selesai, registrasi frame dihentikan total sehingga CPU langsung tidur (*zero wakeups*).
-5. **Event-Driven IPC**:
+5. **Event-Driven IPC & Konsistensi Metrik**:
    - Status workspace, fokus window, dan fullscreen didapat langsung secara real-time melalui push event dari Hyprland socket2 (`$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock`).
-   - Tidak ada polling terus-menerus terhadap `hyprctl`.
-   - Modul system monitor (CPU/RAM/GPU) bersifat **lazy**: tidak membaca `/proc/stat` saat idle, dan hanya membaca data setiap 1.5 detik saat mode `Expanded_System` sedang dibuka oleh user.
+   - Modul system monitor (CPU/RAM/GPU) diperbarui secara berkala dan efisien dengan pembacaan berbasis waktu (setiap 1.5 detik), dilengkapi ambang batas delta sampel minimum serta *Exponential Moving Average* (EMA) dan *multi-sampling* GPU guna menjamin metrik yang akurat, konsisten, dan bebas flicker.
 6. **Adaptive Dynamic Width**: Lebar Dynamic Island saat idle/compact tidak kaku/statis, melainkan menghitung kebutuhan ruang modul secara dinamis menggunakan perekaman layout Pango-Cairo dan menganimasikannya secara halus (cubic ease-out 60 FPS). Status program aktif maupun modul lain tidak akan terpotong setengah.
 
 ---
@@ -88,13 +92,13 @@ dynamic_island/
 | Fitur | Deskripsi | Aksi Interaktif |
 | :--- | :--- | :--- |
 | **1. Clock** | Jam & Menit (HH:MM). | Klik untuk ekspansi: Jam digital besar, Hari, Tanggal lengkap, dan Uptime sistem. |
-| **2. Workspace Hyprland** | Menampilkan workspace aktif (1, 2, [3], 4, 5). Workspace saat ini disorot dengan pill accent. | Klik pada nomor workspace untuk berpindah langsung (`hyprctl dispatch workspace N`). Update realtime via socket2. |
+| **2. Workspace Hyprland** | **Tampilan Kompak 3 Workspace Dinamis**: Menampilkan tepat 3 workspace pada island (`[1, 2, 3]` saat workspace aktif ≤ 3). Jika user berpindah ke workspace > 3, jendela tampilan 3 workspace otomatis bergeser (`[ws - 1, ws, ws + 1]`) sehingga workspace aktif selalu tampil di tengah dengan pill accent. | Klik pada nomor workspace untuk berpindah langsung (`hyprctl dispatch workspace N`). Update realtime via socket2. |
 | **3. Active Window** | Menampilkan class/nama window aktif (misal `kitty`, `google-chrome`, `Visual Studio Code`). Lebar Dynamic Island menyesuaikan panjang nama/status program aktif secara otomatis (adaptive width) sehingga teks tidak terpotong setengah. | Terhubung dengan event `activewindow>>` Hyprland socket2. |
 | **4. Audio Control** | Terhubung ke PipeWire / WirePlumber via `wpctl`. Menampilkan persentase & status mute. | Otomatis ekspansi saat volume berubah. Scroll mouse pada island untuk atur volume. Klik untuk toggle mute. |
 | **5. Media Player** | Integrasi MPRIS (`playerctl`). Menampilkan judul lagu yang sedang diputar. | Klik untuk ekspansi: Info artis & tombol kendali `[⏮ Prev]`, `[⏯ Play/Pause]`, `[⏭ Next]`. |
 | **6. Battery Status** | Membaca sysfs laptop (`/sys/class/power_supply/BAT*`). Menampilkan icon petir saat charging. | Indikator visual berubah merah saat baterai ≤ 20%. |
 | **7. Network Status** | Mendeteksi WiFi (dengan nama SSID) / Ethernet / Terputus via `nmcli` & sysfs. | Klik untuk ekspansi: Interface name & IP lokal. |
-| **8. System Monitor** | Menampilkan CPU %, RAM %, dan GPU % (Radeon Vega 3). | Klik untuk ekspansi: 3 progress bar horizontal halus + Temperatur CPU (°C) & detail penggunaan memori (GB). |
+| **8. System Monitor** | **Metrik Konsisten & Halus**: Menampilkan CPU %, RAM %, dan GPU % (Radeon Vega 3 / AMD / Intel / NVIDIA) secara konsisten dan realtime (update berkala 1.5s di compact dan expanded view) dengan filter EMA (Exponential Moving Average) dan GPU multi-sampling. | Klik untuk ekspansi: 3 progress bar horizontal halus + Temperatur CPU (°C) & detail penggunaan memori (GB). |
 | **9. Screenshot Tool** | Terintegrasi dengan `grim` + `slurp` + `wl-copy`. | Simpan otomatis ke `~/Pictures/Screenshots/`, salin ke clipboard, dan memunculkan banner "📸 Screenshot Captured!". |
 | **10. Notifications** | Banner notifikasi mandiri tanpa daemon berat. | Menerima notifikasi via `dynamic-island notify "App" "Message"` dan otomatis collapse setelah 4.5 detik. |
 | **11. Quick Actions** | Panel kontrol cepat saat klik kanan atau shortcut. | Tombol pill: `[WiFi]`, `[Bluetooth]`, `[Mute]`, `[Night Light]`, `[Screenshot]`, `[Power]`. |
@@ -294,6 +298,9 @@ dynamic-island notify "Kitty" "Build berhasil diselesaikan!"
 # Reload konfigurasi saat runtime
 dynamic-island reload
 
+# Menampilkan informasi versi dan pembuat (MI-Syafaudin)
+dynamic-island version
+
 # Menutup daemon
 dynamic-island quit
 ```
@@ -340,3 +347,14 @@ cd ~/Projects/dynamic_island
 ./uninstall.sh
 ```
 Skrip uninstaller akan menghentikan proses, menghapus binary dari `~/.local/bin`, membersihkan baris konfigurasi dari `hyprland.conf`, dan menonaktifkan systemd service tanpa menyisakan berkas sampah.
+
+---
+
+## 11. Author & Kredit
+
+Proyek **Dynamic Island for Hyprland** dirancang dan dikembangkan oleh:
+
+- **Author & Pengembang Utama**: **[MI-Syafaudin](https://github.com/MI-Syafaudin)**
+- **Repository Resmi**: [https://github.com/MI-Syafaudin/Dynamic-Island](https://github.com/MI-Syafaudin/Dynamic-Island)
+- **Kredit**: Terima kasih kepada komunitas Wayland, Hyprland, dan para pengembang open-source Linux di Indonesia dan seluruh dunia.
+

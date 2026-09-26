@@ -79,6 +79,7 @@ private:
 
     // Periodic timers
     std::chrono::steady_clock::time_point m_last_clock_update;
+    std::chrono::steady_clock::time_point m_last_system_update;
     std::chrono::steady_clock::time_point m_last_media_update;
     std::chrono::steady_clock::time_point m_last_slow_update;
 

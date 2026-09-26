@@ -13,8 +13,15 @@ static void sig_handler(int sig) {
     }
 }
 
+static void print_version() {
+    std::cout << "Dynamic Island for Hyprland v1.1\n"
+              << "Author: MI-Syafaudin\n"
+              << "GitHub: https://github.com/MI-Syafaudin/Dynamic-Island\n";
+}
+
 static void print_help(const char* prog) {
     std::cout << "Dynamic Island for Hyprland (Wayland Native)\n"
+              << "Author: MI-Syafaudin (https://github.com/MI-Syafaudin/Dynamic-Island)\n\n"
               << "Usage:\n"
               << "  " << prog << "                     Start Dynamic Island daemon\n"
               << "  " << prog << " toggle              Toggle Island expand / collapse\n"
@@ -27,6 +34,7 @@ static void print_help(const char* prog) {
               << "  " << prog << " notify <app> <msg>  Show notification banner on island\n"
               << "  " << prog << " reload              Reload config.json\n"
               << "  " << prog << " quit                Stop running daemon\n"
+              << "  " << prog << " version             Show version and author info\n"
               << "  " << prog << " --help              Show this help message\n";
 }
 
@@ -36,6 +44,10 @@ int main(int argc, char** argv) {
         std::string first_arg = argv[1];
         if (first_arg == "--help" || first_arg == "-h") {
             print_help(argv[0]);
+            return 0;
+        }
+        if (first_arg == "--version" || first_arg == "-v" || first_arg == "version") {
+            print_version();
             return 0;
         }
 
@@ -74,7 +86,7 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, sig_handler);
     std::signal(SIGHUP, SIG_IGN);
 
-    std::cout << "[Dynamic Island] Initializing native Wayland Layer Shell...\n";
+    std::cout << "[Dynamic Island] Initializing native Wayland Layer Shell (by MI-Syafaudin)...\n";
     if (!app.init()) {
         std::cerr << "[Dynamic Island] Failed to initialize.\n";
         return 1;

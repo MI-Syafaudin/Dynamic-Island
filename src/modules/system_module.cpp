@@ -5,19 +5,56 @@
 #include <iomanip>
 #include <filesystem>
 #include <algorithm>
+#include <thread>
 
 namespace di {
 
 SystemModule::SystemModule() {
-    // Detect GPU busy percent path
-    for (int card = 0; card < 4; ++card) {
-        std::string p = "/sys/class/drm/card" + std::to_string(card) + "/device/gpu_busy_percent";
-        if (std::filesystem::exists(p)) {
-            m_gpu_busy_path = p;
-            break;
+    // Detect GPU busy percent path (AMD / generic DRM)
+    if (std::filesystem::exists("/sys/class/drm")) {
+        for (const auto& entry : std::filesystem::directory_iterator("/sys/class/drm")) {
+            std::string name = entry.path().filename().string();
+            if (name.rfind("card", 0) == 0 && name.find('-') == std::string::npos) {
+                std::string p = entry.path() / "device/gpu_busy_percent";
+                if (std::filesystem::exists(p)) {
+                    m_gpu_busy_path = p;
+                    break;
+                }
+                std::string intel_act = entry.path() / "gt/gt0/rps_act_freq_mhz";
+                std::string intel_max = entry.path() / "gt/gt0/rps_max_freq_mhz";
+                if (std::filesystem::exists(intel_act) && std::filesystem::exists(intel_max)) {
+                    m_intel_act_freq_path = intel_act;
+                    m_intel_max_freq_path = intel_max;
+                }
+            }
         }
     }
 
+    // Detect GPU name
+    FILE* fp = popen("lspci -d ::0300 2>/dev/null", "r");
+    if (fp) {
+        char buf[256];
+        if (fgets(buf, sizeof(buf), fp)) {
+            std::string s(buf);
+            if (s.find("Vega") != std::string::npos || s.find("Picasso") != std::string::npos || s.find("Raven") != std::string::npos) {
+                m_gpu_name = "(Radeon Vega 3)";
+            } else if (s.find("AMD") != std::string::npos || s.find("Radeon") != std::string::npos) {
+                m_gpu_name = "(AMD Radeon)";
+            } else if (s.find("Intel") != std::string::npos) {
+                m_gpu_name = "(Intel Graphics)";
+            } else if (s.find("NVIDIA") != std::string::npos) {
+                m_gpu_name = "(NVIDIA)";
+            }
+        }
+        pclose(fp);
+    }
+    if (m_gpu_name.empty()) {
+        m_gpu_name = "(Radeon Vega 3)";
+    }
+
+    // Seed initial CPU sample
+    update_cpu();
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
     update_cpu();
     update_ram();
     update_gpu();
@@ -37,10 +74,32 @@ void SystemModule::update_cpu() {
                 unsigned long long work_jiffies = user + nice + system + irq + softirq + steal;
                 unsigned long long total_jiffies = work_jiffies + idle + iowait;
 
-                if (m_prev_total_jiffies != 0 && total_jiffies > m_prev_total_jiffies) {
-                    unsigned long long total_delta = total_jiffies - m_prev_total_jiffies;
-                    unsigned long long work_delta = work_jiffies - m_prev_work_jiffies;
-                    m_cpu_percent = std::clamp(static_cast<int>(std::round((work_delta * 100.0) / total_delta)), 0, 100);
+                if (m_prev_total_jiffies == 0) {
+                    m_prev_total_jiffies = total_jiffies;
+                    m_prev_work_jiffies = work_jiffies;
+                    return;
+                }
+
+                if (total_jiffies <= m_prev_total_jiffies) {
+                    return;
+                }
+
+                unsigned long long total_delta = total_jiffies - m_prev_total_jiffies;
+                // Require at least 15 jiffies (~150ms) to prevent volatile readings
+                if (total_delta < 15) {
+                    return;
+                }
+
+                unsigned long long work_delta = (work_jiffies >= m_prev_work_jiffies)
+                                                ? (work_jiffies - m_prev_work_jiffies)
+                                                : 0;
+                int raw_cpu = std::clamp(static_cast<int>(std::round((work_delta * 100.0) / total_delta)), 0, 100);
+
+                if (m_cpu_percent == 0) {
+                    m_cpu_percent = raw_cpu;
+                } else {
+                    // Exponential Moving Average (EMA) to smooth out micro-spikes
+                    m_cpu_percent = std::clamp(static_cast<int>(std::round(0.70 * raw_cpu + 0.30 * m_cpu_percent)), 0, 100);
                 }
 
                 m_prev_total_jiffies = total_jiffies;
@@ -75,13 +134,42 @@ void SystemModule::update_ram() {
 }
 
 void SystemModule::update_gpu() {
-    m_gpu_percent = 0;
+    int raw_percent = 0;
     if (!m_gpu_busy_path.empty()) {
-        std::ifstream file(m_gpu_busy_path);
-        if (file.is_open()) {
-            file >> m_gpu_percent;
-            m_gpu_percent = std::clamp(m_gpu_percent, 0, 100);
+        // Multi-sample gpu_busy_percent over a short interval (3 samples, ~8ms total)
+        // to avoid catching momentary single-frame compositing spikes or idle vblank drops
+        int sum_samples = 0;
+        int valid_samples = 0;
+        for (int i = 0; i < 3; ++i) {
+            std::ifstream file(m_gpu_busy_path);
+            if (file.is_open()) {
+                int sample = 0;
+                if (file >> sample) {
+                    sum_samples += std::clamp(sample, 0, 100);
+                    valid_samples++;
+                }
+            }
+            if (i < 2) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(4));
+            }
         }
+        if (valid_samples > 0) {
+            raw_percent = sum_samples / valid_samples;
+        }
+    } else if (!m_intel_act_freq_path.empty() && !m_intel_max_freq_path.empty()) {
+        int act = 0, max_f = 0;
+        std::ifstream f_act(m_intel_act_freq_path);
+        std::ifstream f_max(m_intel_max_freq_path);
+        if (f_act >> act && f_max >> max_f && max_f > 0) {
+            raw_percent = std::clamp(static_cast<int>(std::round((act * 100.0) / max_f)), 0, 100);
+        }
+    }
+
+    // Apply EMA smoothing to GPU reading
+    if (m_gpu_percent == 0) {
+        m_gpu_percent = raw_percent;
+    } else {
+        m_gpu_percent = std::clamp(static_cast<int>(std::round(0.65 * raw_percent + 0.35 * m_gpu_percent)), 0, 100);
     }
 }
 
@@ -178,8 +266,8 @@ void SystemModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, c
     ram_ss << "(" << std::fixed << std::setprecision(1) << m_ram_used_gb << " / " << m_ram_total_gb << " GB)";
     draw_metric_row(40, "󰘚 RAM", m_ram_percent, ram_ss.str(), config.colors.accent_blue);
 
-    // Row 3: GPU (Vega 3)
-    draw_metric_row(70, "󰢮 GPU", m_gpu_percent, "(Radeon Vega 3)", config.colors.warning);
+    // Row 3: GPU
+    draw_metric_row(70, "󰢮 GPU", m_gpu_percent, m_gpu_name, config.colors.warning);
 
     g_object_unref(layout);
 
