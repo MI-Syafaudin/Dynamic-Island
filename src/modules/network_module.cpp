@@ -102,24 +102,28 @@ void NetworkModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, 
     // Title
     std::string title = (m_connected ? (m_is_wifi ? "󰖩 WiFi Connected" : "󰈀 Ethernet Connected") : "󰖪 Disconnected");
     pango_layout_set_text(layout, title.c_str(), -1);
+    int tw, th;
+    pango_layout_get_pixel_size(layout, &tw, &th);
     cairo_set_source_rgba(cr, m_connected ? config.colors.accent_blue.r : config.colors.danger.r,
                               m_connected ? config.colors.accent_blue.g : config.colors.danger.g,
                               m_connected ? config.colors.accent_blue.b : config.colors.danger.b, 1.0);
-    cairo_move_to(cr, 20, 10);
+    cairo_move_to(cr, (w - tw) / 2, 10);
     pango_cairo_show_layout(cr, layout);
 
     // SSID / Network Name
     std::string net_str = "Network: " + (m_ssid.empty() ? "None" : m_ssid);
     pango_layout_set_text(layout, net_str.c_str(), -1);
+    pango_layout_get_pixel_size(layout, &tw, &th);
     cairo_set_source_rgba(cr, config.colors.text.r, config.colors.text.g, config.colors.text.b, 1.0);
-    cairo_move_to(cr, 20, 30);
+    cairo_move_to(cr, (w - tw) / 2, 30);
     pango_cairo_show_layout(cr, layout);
 
     // IP Address & Interface
     std::string ip_str = "IP: " + m_ip + " (" + (m_interface.empty() ? "wlan0" : m_interface) + ")";
     pango_layout_set_text(layout, ip_str.c_str(), -1);
+    pango_layout_get_pixel_size(layout, &tw, &th);
     cairo_set_source_rgba(cr, config.colors.subtext.r, config.colors.subtext.g, config.colors.subtext.b, 0.9);
-    cairo_move_to(cr, 20, 50);
+    cairo_move_to(cr, (w - tw) / 2, 50);
     pango_cairo_show_layout(cr, layout);
 
     g_object_unref(layout);

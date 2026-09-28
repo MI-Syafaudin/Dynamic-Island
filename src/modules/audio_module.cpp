@@ -46,11 +46,13 @@ void AudioModule::change_volume(int delta_percent) {
         ss << "wpctl set-volume @DEFAULT_AUDIO_SINK@ " << (-delta_percent) << "%- 2>/dev/null";
     }
     std::system(ss.str().c_str());
+    m_volume = std::clamp(m_volume + delta_percent, 0, 150);
     query_audio_state();
 }
 
 void AudioModule::toggle_mute() {
     std::system("wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle 2>/dev/null");
+    m_muted = !m_muted;
     query_audio_state();
 }
 
@@ -84,7 +86,7 @@ void AudioModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, co
     PangoLayout* layout = pango_cairo_create_layout(cr);
     pango_layout_set_font_description(layout, font_desc);
 
-    // Title / Icon
+    // Title / Icon (centered)
     std::string icon = m_muted ? "󰖁" : "󰕾";
     std::string title = icon + (m_muted ? " Audio Muted" : " Volume");
     pango_layout_set_text(layout, title.c_str(), -1);
@@ -94,7 +96,7 @@ void AudioModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, co
     cairo_set_source_rgba(cr, m_muted ? config.colors.danger.r : config.colors.text.r,
                               m_muted ? config.colors.danger.g : config.colors.text.g,
                               m_muted ? config.colors.danger.b : config.colors.text.b, 1.0);
-    cairo_move_to(cr, 20, 10);
+    cairo_move_to(cr, (w - tw) / 2, 10);
     pango_cairo_show_layout(cr, layout);
 
     // Percentage text on right
@@ -141,7 +143,8 @@ void AudioModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, co
 
     g_object_unref(layout);
 
-    // Hitbox to toggle mute on click
+    // Hitbox for slider click and mute toggle
+    hitboxes.push_back({bar_x, bar_y - 6, bar_w, bar_h + 12, "audio_set_volume", ""});
     hitboxes.push_back({0, 0, w, h, "audio_toggle_mute", ""});
 }
 

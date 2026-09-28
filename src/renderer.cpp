@@ -81,7 +81,7 @@ void Renderer::draw_brightness_expanded(cairo_t* cr, const Config& config, int w
     int tw, th;
     pango_layout_get_pixel_size(layout, &tw, &th);
     cairo_set_source_rgba(cr, config.colors.warning.r, config.colors.warning.g, config.colors.warning.b, 1.0);
-    cairo_move_to(cr, 20, 10);
+    cairo_move_to(cr, (w - tw) / 2, 10);
     pango_cairo_show_layout(cr, layout);
 
     // Percentage text
@@ -120,6 +120,7 @@ void Renderer::draw_brightness_expanded(cairo_t* cr, const Config& config, int w
     }
 
     g_object_unref(layout);
+    hitboxes.push_back({bar_x, bar_y - 6, bar_w, bar_h + 12, "brightness_set", ""});
     hitboxes.push_back({0, 0, w, h, "collapse", ""});
 }
 

@@ -93,12 +93,27 @@ void App::query_brightness() {
 }
 
 void App::set_brightness(int delta_percent) {
-    if (delta_percent >= 0) {
-        std::system(("brightnessctl set " + std::to_string(delta_percent) + "%+ >/dev/null 2>&1 &").c_str());
+    std::string cmd = (delta_percent >= 0)
+        ? "brightnessctl set " + std::to_string(delta_percent) + "%+ -m 2>/dev/null"
+        : "brightnessctl set " + std::to_string(-delta_percent) + "%- -m 2>/dev/null";
+
+    FILE* fp = popen(cmd.c_str(), "r");
+    if (fp) {
+        char buffer[128];
+        if (fgets(buffer, sizeof(buffer), fp) != nullptr) {
+            std::string line = buffer;
+            size_t pct_pos = line.find('%');
+            if (pct_pos != std::string::npos) {
+                size_t comma = line.rfind(',', pct_pos);
+                if (comma != std::string::npos) {
+                    m_brightness_val = std::atoi(line.substr(comma + 1, pct_pos - comma - 1).c_str());
+                }
+            }
+        }
+        pclose(fp);
     } else {
-        std::system(("brightnessctl set " + std::to_string(-delta_percent) + "%- >/dev/null 2>&1 &").c_str());
+        query_brightness();
     }
-    query_brightness();
     expand_to(IslandMode::Expanded_Brightness, m_config.timeouts.brightness_ms);
 }
 
@@ -233,7 +248,16 @@ void App::get_target_dimensions(IslandMode mode, double& w, double& h) {
 }
 
 void App::expand_to(IslandMode mode, int timeout_ms) {
-    if (m_mode == mode && !m_animating) return;
+    if (m_mode == mode) {
+        if (timeout_ms > 0) {
+            m_has_auto_collapse = true;
+            m_auto_collapse_time = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+        }
+        if (!m_animating) {
+            render_current_state();
+        }
+        return;
+    }
 
     m_mode = mode;
     m_start_w = m_curr_w;
@@ -250,6 +274,15 @@ void App::expand_to(IslandMode mode, int timeout_ms) {
     if (mode == IslandMode::Expanded_Media && m_media_mod) {
         m_media_mod->update();
         m_last_media_update = m_anim_start;
+    }
+    if (mode == IslandMode::Expanded_Audio && m_audio_mod) {
+        m_audio_mod->update();
+    }
+    if (mode == IslandMode::Expanded_Brightness) {
+        query_brightness();
+    }
+    if (mode == IslandMode::Expanded_QuickActions && m_quick_mod) {
+        m_quick_mod->update();
     }
 
     if (timeout_ms > 0) {
@@ -366,6 +399,36 @@ void App::on_mouse_button(double x, double y, uint32_t button, bool pressed) {
                     collapse();
                     return;
                 }
+                if (hb.action == "audio_set_volume") {
+                    double pct = std::clamp((x - 20.0) / (m_curr_w - 40.0), 0.0, 1.0);
+                    int vol = static_cast<int>(std::round(pct * 100.0));
+                    std::system(("wpctl set-volume @DEFAULT_AUDIO_SINK@ " + std::to_string(vol) + "% 2>/dev/null").c_str());
+                    if (m_audio_mod) m_audio_mod->update();
+                    render_current_state();
+                    return;
+                }
+                if (hb.action == "brightness_set") {
+                    double pct = std::clamp((x - 20.0) / (m_curr_w - 40.0), 0.05, 1.0);
+                    int br = static_cast<int>(std::round(pct * 100.0));
+                    std::string cmd = "brightnessctl set " + std::to_string(br) + "% -m 2>/dev/null";
+                    FILE* fp = popen(cmd.c_str(), "r");
+                    if (fp) {
+                        char buffer[128];
+                        if (fgets(buffer, sizeof(buffer), fp) != nullptr) {
+                            std::string line = buffer;
+                            size_t pct_pos = line.find('%');
+                            if (pct_pos != std::string::npos) {
+                                size_t comma = line.rfind(',', pct_pos);
+                                if (comma != std::string::npos) {
+                                    m_brightness_val = std::atoi(line.substr(comma + 1, pct_pos - comma - 1).c_str());
+                                }
+                            }
+                        }
+                        pclose(fp);
+                    }
+                    render_current_state();
+                    return;
+                }
                 if (hb.action == "toggle_expand") {
                     if (hb.param == "clock") toggle_mode(IslandMode::Expanded_Clock);
                     else if (hb.param == "media") toggle_mode(IslandMode::Expanded_Media);
@@ -379,6 +442,9 @@ void App::on_mouse_button(double x, double y, uint32_t button, bool pressed) {
                 // Check modules for handler
                 for (auto& mod : m_modules) {
                     if (mod && mod->handle_click(hb.action, hb.param)) {
+                        if (hb.action == "qa_mute" && m_audio_mod) {
+                            m_audio_mod->update();
+                        }
                         render_current_state();
                         return;
                     }
@@ -393,11 +459,16 @@ void App::on_mouse_button(double x, double y, uint32_t button, bool pressed) {
     }
 }
 
-void App::on_mouse_motion(double x, double y) {}
+void App::on_mouse_motion(double x, double y) {
+    (void)x;
+    (void)y;
+}
 
 void App::on_mouse_scroll(double delta) {
-    if (m_audio_mod) {
-        int step = (delta > 0) ? -5 : 5;
+    int step = (delta > 0) ? -5 : 5;
+    if (m_mode == IslandMode::Expanded_Brightness) {
+        set_brightness(step);
+    } else if (m_audio_mod) {
         m_audio_mod->change_volume(step);
         expand_to(IslandMode::Expanded_Audio, m_config.timeouts.volume_ms);
     }
@@ -406,6 +477,7 @@ void App::on_mouse_scroll(double delta) {
 std::string App::handle_ipc_command(const std::string& cmd, const std::vector<std::string>& args) {
     if (cmd == "toggle") {
         if (m_mode == IslandMode::Idle) {
+            if (m_quick_mod) m_quick_mod->update();
             expand_to(IslandMode::Expanded_QuickActions, 0);
         } else {
             collapse();
@@ -419,13 +491,25 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
     if (cmd == "expand") {
         if (!args.empty()) {
             std::string target = args[0];
-            if (target == "audio") expand_to(IslandMode::Expanded_Audio, m_config.timeouts.volume_ms);
-            else if (target == "brightness") expand_to(IslandMode::Expanded_Brightness, m_config.timeouts.brightness_ms);
-            else if (target == "media") expand_to(IslandMode::Expanded_Media, 0);
-            else if (target == "system") expand_to(IslandMode::Expanded_System, 0);
-            else if (target == "clock") expand_to(IslandMode::Expanded_Clock, 0);
-            else if (target == "network") expand_to(IslandMode::Expanded_Network, 0);
-            else if (target == "quick") expand_to(IslandMode::Expanded_QuickActions, 0);
+            if (target == "audio") {
+                if (m_audio_mod) m_audio_mod->update();
+                expand_to(IslandMode::Expanded_Audio, m_config.timeouts.volume_ms);
+            } else if (target == "brightness") {
+                query_brightness();
+                expand_to(IslandMode::Expanded_Brightness, m_config.timeouts.brightness_ms);
+            } else if (target == "media") {
+                expand_to(IslandMode::Expanded_Media, 0);
+            } else if (target == "system") {
+                expand_to(IslandMode::Expanded_System, 0);
+            } else if (target == "clock") {
+                expand_to(IslandMode::Expanded_Clock, 0);
+            } else if (target == "network") {
+                if (m_net_mod) m_net_mod->update();
+                expand_to(IslandMode::Expanded_Network, 0);
+            } else if (target == "quick") {
+                if (m_quick_mod) m_quick_mod->update();
+                expand_to(IslandMode::Expanded_QuickActions, 0);
+            }
             return "OK";
         }
     }
@@ -434,14 +518,15 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
             std::string val = args[0];
             if (val == "toggle" || val == "mute") {
                 m_audio_mod->toggle_mute();
-            } else if (val.find('+') != std::string::npos) {
+            } else {
                 int delta = 5;
-                sscanf(val.c_str(), "%d", &delta);
-                m_audio_mod->change_volume(std::abs(delta));
-            } else if (val.find('-') != std::string::npos) {
-                int delta = 5;
-                sscanf(val.c_str(), "%d", &delta);
-                m_audio_mod->change_volume(-std::abs(delta));
+                if (sscanf(val.c_str(), "%d", &delta) == 1) {
+                    m_audio_mod->change_volume(delta);
+                } else if (val.find('+') != std::string::npos) {
+                    m_audio_mod->change_volume(5);
+                } else if (val.find('-') != std::string::npos) {
+                    m_audio_mod->change_volume(-5);
+                }
             }
             expand_to(IslandMode::Expanded_Audio, m_config.timeouts.volume_ms);
             return "OK";
@@ -450,7 +535,10 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
     if (cmd == "brightness") {
         if (!args.empty()) {
             std::string val = args[0];
-            if (val.find('+') != std::string::npos) {
+            int delta = 5;
+            if (sscanf(val.c_str(), "%d", &delta) == 1) {
+                set_brightness(delta);
+            } else if (val.find('+') != std::string::npos) {
                 set_brightness(5);
             } else if (val.find('-') != std::string::npos) {
                 set_brightness(-5);
@@ -633,13 +721,18 @@ void App::run() {
             }
         }
 
-        // Periodic Slow update: Battery & Network (every 10s)
-        if (std::chrono::duration_cast<std::chrono::seconds>(now - m_last_slow_update).count() >= 10) {
+        // Periodic Slow update: Battery, Network, Audio, Brightness, Quick Controls (every 5s)
+        if (std::chrono::duration_cast<std::chrono::seconds>(now - m_last_slow_update).count() >= 5) {
             m_last_slow_update = now;
             if (m_bat_mod) m_bat_mod->update();
             if (m_net_mod) m_net_mod->update();
+            if (m_audio_mod) m_audio_mod->update();
+            if (m_quick_mod && m_mode == IslandMode::Expanded_QuickActions) m_quick_mod->update();
+            query_brightness();
             if (m_mode == IslandMode::Idle) {
                 update_idle_dimensions(true);
+            } else if (m_mode == IslandMode::Expanded_QuickActions || m_mode == IslandMode::Expanded_Audio || m_mode == IslandMode::Expanded_Brightness) {
+                render_current_state();
             }
         }
     }

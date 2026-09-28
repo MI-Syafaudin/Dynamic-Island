@@ -34,78 +34,26 @@ Proyek ini dibangun dari awal dengan fokus utama pada **efisiensi ekstrem**, **k
 
 ---
 
-## 2. Struktur Proyek
-
-```
-dynamic_island/
-├── Makefile                        # Build system (g++ C++20)
-├── install.sh                      # Skrip instalasi otomatis untuk CachyOS/Arch
-├── uninstall.sh                    # Skrip uninstaller bersih
-├── README.md                       # Dokumentasi lengkap
-├── build/
-│   └── dynamic-island              # Binary executable mandiri (~378 KB)
-├── config/
-│   └── config.json                 # File konfigurasi utama
-├── themes/
-│   ├── default_dark.json           # Tema Apple dark (#111111)
-│   ├── midnight_blue.json          # Tema laut dalam (#0b0f19)
-│   ├── emerald_dark.json           # Tema emerald gelap (#0b1411)
-│   └── amoled_black.json           # Tema hitam pekat AMOLED (#000000)
-├── scripts/
-│   ├── volume_notify.sh            # Wrapper volume keybinding
-│   ├── brightness_notify.sh        # Wrapper brightness keybinding
-│   └── dynamic-island-ctl.sh       # Controller utilitas CLI
-├── hyprland/
-│   └── dynamic-island.conf         # Konfigurasi autostart & keybinding Hyprland
-└── src/
-    ├── main.cpp                    # CLI entry & daemon lifecycle
-    ├── app.hpp / app.cpp           # State machine, animasi & event loop
-    ├── config.hpp / config.cpp     # Parser konfigurasi JSON
-    ├── wayland.hpp / wayland.cpp   # Wrapper Wayland Layer Shell & input
-    ├── renderer.hpp / renderer.cpp # Rendering Cairo & Pango
-    ├── hyprland_ipc.hpp / .cpp     # Listener non-blocking socket2 Hyprland
-    ├── ipc_server.hpp / .cpp       # Server socket UNIX lokal untuk CLI
-    ├── json.hpp                    # Parser JSON ringan tanpa dependensi
-    ├── protocols/
-    │   ├── wlr-layer-shell-unstable-v1.xml
-    │   ├── wlr-layer-shell-protocol.h / .c
-    │   └── xdg-shell-protocol.h / .c
-    └── modules/
-        ├── module_base.hpp         # Interface modular & hit box
-        ├── clock_module.hpp / .cpp
-        ├── workspace_module.hpp / .cpp
-        ├── window_module.hpp / .cpp
-        ├── audio_module.hpp / .cpp
-        ├── media_module.hpp / .cpp
-        ├── battery_module.hpp / .cpp
-        ├── network_module.hpp / .cpp
-        ├── system_module.hpp / .cpp
-        ├── screenshot_module.hpp / .cpp
-        ├── notification_module.hpp / .cpp
-        └── quickaction_module.hpp / .cpp
-```
-
----
-
-## 3. Fitur Utama
+## 2. Fitur Utama
 
 | Fitur | Deskripsi | Aksi Interaktif |
 | :--- | :--- | :--- |
-| **1. Clock** | Jam & Menit (HH:MM). | Klik untuk ekspansi: Jam digital besar, Hari, Tanggal lengkap, dan Uptime sistem. |
+| **1. Clock** | Jam & Menit (HH:MM). | Klik untuk ekspansi: Jam digital besar, Hari, Tanggal lengkap, dan Uptime sistem terpusat di tengah (*centered*). |
 | **2. Workspace Hyprland** | **Tampilan Kompak 3 Workspace Dinamis**: Menampilkan tepat 3 workspace pada island (`[1, 2, 3]` saat workspace aktif ≤ 3). Jika user berpindah ke workspace > 3, jendela tampilan 3 workspace otomatis bergeser (`[ws - 1, ws, ws + 1]`) sehingga workspace aktif selalu tampil di tengah dengan pill accent. | Klik pada nomor workspace untuk berpindah langsung (`hyprctl dispatch workspace N`). Update realtime via socket2. |
 | **3. Active Window** | Menampilkan class/nama window aktif (misal `kitty`, `google-chrome`, `Visual Studio Code`). Lebar Dynamic Island menyesuaikan panjang nama/status program aktif secara otomatis (adaptive width) sehingga teks tidak terpotong setengah. | Terhubung dengan event `activewindow>>` Hyprland socket2. |
-| **4. Audio Control** | Terhubung ke PipeWire / WirePlumber via `wpctl`. Menampilkan persentase & status mute. | Otomatis ekspansi saat volume berubah. Scroll mouse pada island untuk atur volume. Klik untuk toggle mute. |
-| **5. Media Player** | **Tampilan Modern & Rata Tengah**: Integrasi MPRIS (`playerctl`) dengan desain modern ala iOS Dynamic Island. Menampilkan judul lagu yang sedang diputar, nama artis, dan aplikasi sumber media. | Klik untuk ekspansi: Header pill status rata tengah (`󰝚 NOW PLAYING` / `󰝛 PAUSED` / nama player), judul track & artis di posisi tengah (*centered alignment*) dengan auto-ellipsis rapi, serta tombol kontrol playback modern `[󰒮 Prev]`, `[󰏤/󰐊 Play/Pause]`, `[󰒭 Next]` dengan jarak presisi tanpa saling menutupi. |
-| **6. Battery Status** | Membaca sysfs laptop (`/sys/class/power_supply/BAT*`). Menampilkan icon petir saat charging. | Indikator visual berubah merah saat baterai ≤ 20%. |
-| **7. Network Status** | Mendeteksi WiFi (dengan nama SSID) / Ethernet / Terputus via `nmcli` & sysfs. | Klik untuk ekspansi: Interface name & IP lokal. |
-| **8. System Monitor** | **Metrik Lengkap 4 Baris & Halus**: Menampilkan CPU %, RAM %, **ZRAM / Swap RAM %**, dan GPU % (Radeon Vega 3 / AMD / Intel / NVIDIA) secara konsisten dan realtime (update berkala 1.5s di compact dan expanded view) dengan filter EMA dan GPU multi-sampling. Otomatis mendeteksi perangkat ZRAM (`󰾴 ZRAM`) maupun swap disk (`󰾴 SWAP`). | Klik untuk ekspansi: 4 bar visual horizontal (CPU aksen hijau, RAM aksen biru, ZRAM/Swap aksen ungu, GPU aksen kuning) + Temperatur CPU (°C) & detail penggunaan memori fisik serta swap (GB). |
-| **9. Screenshot Tool** | Terintegrasi dengan `grim` + `slurp` + `wl-copy`. | Simpan otomatis ke `~/Pictures/Screenshots/`, salin ke clipboard, dan memunculkan banner "📸 Screenshot Captured!". |
-| **10. Notifications** | Banner notifikasi mandiri tanpa daemon berat. | Menerima notifikasi via `dynamic-island notify "App" "Message"` dan otomatis collapse setelah 4.5 detik. |
-| **11. Quick Actions** | Panel kontrol cepat saat klik kanan atau shortcut. | Tombol pill: `[WiFi]`, `[Bluetooth]`, `[Mute]`, `[Night Light]`, `[Screenshot]`, `[Power]`. |
+| **4. Audio & Volume Control** | **Sinkronisasi Presisi & Rata Tengah**: Terhubung ke PipeWire / WirePlumber via `wpctl`. Judul `"󰕾 Volume"` diposisikan presisi di tengah (*centered*). Persentase dan slider selalu sinkron secara realtime tanpa jeda. | Otomatis ekspansi saat volume berubah. Klik *slider track* untuk set volume langsung, scroll mouse pada island untuk atur volume naik/turun, dan klik bodi untuk toggle mute. |
+| **5. Brightness Control** | **Sinkronisasi Kecerahan Hardware & Rata Tengah**: Pembacaan langsung nilai perangkat keras via `brightnessctl -m`. Judul `"󰃠 Brightness"` diposisikan di tengah (*centered*), tersinkronisasi 100% tanpa *race condition* atau *early collapse*. | Otomatis ekspansi saat tombol kecerahan ditekan. Klik *slider track* untuk atur kecerahan instan, atau scroll mouse saat mode kecerahan aktif. |
+| **6. Media Player** | **Tampilan Modern & Rata Tengah**: Integrasi MPRIS (`playerctl`) dengan desain modern ala iOS Dynamic Island. Menampilkan judul lagu yang sedang diputar, nama artis, dan aplikasi sumber media. | Klik untuk ekspansi: Header pill status rata tengah (`󰝚 NOW PLAYING` / `󰝛 PAUSED` / nama player), judul track & artis di posisi tengah (*centered alignment*) dengan auto-ellipsis rapi, serta tombol kontrol playback modern `[󰒮 Prev]`, `[󰏤/󰐊 Play/Pause]`, `[󰒭 Next]` dengan jarak presisi tanpa saling menutupi. |
+| **7. Battery Status** | Membaca sysfs laptop (`/sys/class/power_supply/BAT*`). Menampilkan icon petir saat charging. | Indikator visual berubah merah saat baterai ≤ 20%. |
+| **8. Network Status** | **Informasi Jaringan Terpusat**: Mendeteksi WiFi (dengan nama SSID) / Ethernet / Terputus via `nmcli` & sysfs. Seluruh teks (Status Koneksi, Nama SSID, dan Alamat IP) tersaji rapi rata tengah (*centered*). | Klik untuk ekspansi: Menampilkan status koneksi, nama SSID, interface name & IP lokal secara terpusat. |
+| **9. System Monitor** | **Metrik Lengkap 4 Baris & Halus**: Menampilkan CPU %, RAM %, **ZRAM / Swap RAM %**, dan GPU % (Radeon Vega 3 / AMD / Intel / NVIDIA) secara konsisten dan realtime (update berkala 1.5s di compact dan expanded view) dengan filter EMA dan GPU multi-sampling. Otomatis mendeteksi perangkat ZRAM (`󰾴 ZRAM`) maupun swap disk (`󰾴 SWAP`). | Klik untuk ekspansi: 4 bar visual horizontal (CPU aksen hijau, RAM aksen biru, ZRAM/Swap aksen ungu, GPU aksen kuning) + Temperatur CPU (°C) & detail penggunaan memori fisik serta swap (GB). |
+| **10. Screenshot Tool** | Terintegrasi dengan `grim` + `slurp` + `wl-copy`. | Simpan otomatis ke `~/Pictures/Screenshots/`, salin ke clipboard, dan memunculkan banner "📸 Screenshot Captured!". |
+| **11. Notifications** | Banner notifikasi mandiri tanpa daemon berat. | Menerima notifikasi via `dynamic-island notify "App" "Message"` dan otomatis collapse setelah 4.5 detik. |
+| **12. Quick Controls** | **Panel Kontrol Cepat Modern dengan Indikator Aktif**: Header *"Quick Controls"* di posisi tengah (*centered*). Dilengkapi **indikator status aktif** berbasis sistem riil untuk WiFi, Bluetooth, Mute, dan Night Light. | Tombol yang aktif memiliki latar warna aksen dinamis (`accent_blue`, `danger`, `warning`), batas sorotan (*highlight border*), titik indikator (*active dot*), dan ikon/label berganti dinamis (misal `󰖩`/`󰖪`, `󰂯`/`󰂲`, `󰖁 Muted`/`󰕾 Mute`). Respon klik instan tanpa delay. |
 
 ---
 
-## 4. Cara Instalasi
+## 3. Cara Instalasi
 
 ### Prasyarat di CachyOS / Arch Linux
 Semua dependensi dasar sudah tersedia di sistem CachyOS standar:
@@ -132,7 +80,7 @@ Skrip ini akan secara otomatis:
 
 ---
 
-## 5. Cara Menjalankan & Autostart
+## 4. Cara Menjalankan & Autostart
 
 ### 1. Menjalankan Langsung via Terminal
 ```bash
@@ -155,7 +103,7 @@ systemctl --user enable --now dynamic-island.service
 
 ---
 
-## 6. Konfigurasi (`config.json`)
+## 5. Konfigurasi (`config.json`)
 
 Konfigurasi disimpan di `~/.config/dynamic-island/config.json`. Setiap perubahan dapat diterapkan secara langsung tanpa kompilasi ulang dengan perintah:
 ```bash
@@ -227,7 +175,7 @@ dynamic-island reload
 
 ---
 
-## 7. Navigasi Shortcut & Kontrol Mouse
+## 6. Navigasi Shortcut & Kontrol Mouse
 
 ### Mouse
 - **Left Click**:
@@ -235,10 +183,11 @@ dynamic-island reload
   - Klik Jam: Buka ekspansi kalender & uptime.
   - Klik Lagu: Buka kontrol pemutar media.
   - Klik Tombol Media `[⏮ ⏯ ⏭]`: Kontrol musik via MPRIS.
-  - Klik Tombol Quick Action: Toggle WiFi, Bluetooth, Night Light, Mute, Screenshot, Power.
+  - Klik *Slider Bar* (Volume / Brightness): Mengatur level persentase volume atau kecerahan layar secara instan.
+  - Klik Tombol Quick Action: Toggle WiFi, Bluetooth, Night Light, Mute, Screenshot, Power dengan indikator visual aktif yang jelas.
   - Klik di luar tombol saat ekspansi: Otomatis collapse kembali ke idle.
-- **Right Click**: Membuka / menutup menu Quick Actions.
-- **Scroll Wheel**: Mengatur volume naik/turun dengan step 5%.
+- **Right Click**: Membuka / menutup panel Quick Controls.
+- **Scroll Wheel**: Mengatur volume naik/turun (atau kecerahan layar saat mode brightness aktif) dengan step 5%.
 
 ### Shortcut Keyboard (Hyprland Keybindings)
 | Shortcut | Aksi |
@@ -258,7 +207,7 @@ dynamic-island reload
 
 ---
 
-## 8. CLI & IPC Control
+## 7. CLI & IPC Control
 
 Binary `dynamic-island` berfungsi ganda sebagai daemon dan kontroler CLI:
 ```bash
@@ -272,6 +221,8 @@ dynamic-island collapse
 dynamic-island expand system
 dynamic-island expand media
 dynamic-island expand audio
+dynamic-island expand brightness
+dynamic-island expand network
 dynamic-island expand clock
 dynamic-island expand quick
 
@@ -308,7 +259,7 @@ dynamic-island quit
 
 ---
 
-## 9. Troubleshooting & Debugging
+## 8. Troubleshooting & Debugging
 
 ### 1. Memeriksa Apakah Daemon Sedang Berjalan
 ```bash
@@ -340,7 +291,7 @@ sudo pacman -S ttf-firacode-nerd
 
 ---
 
-## 10. Cara Uninstall Bersih
+## 9. Cara Uninstall Bersih
 
 Jika Anda ingin mencopot Dynamic Island:
 ```bash
@@ -351,7 +302,7 @@ Skrip uninstaller akan menghentikan proses, menghapus binary dari `~/.local/bin`
 
 ---
 
-## 11. Author & Kredit
+## 10. Author & Kredit
 
 Proyek **Dynamic Island for Hyprland** dirancang dan dikembangkan oleh:
 
