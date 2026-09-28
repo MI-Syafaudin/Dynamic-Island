@@ -23,6 +23,7 @@ private:
     std::string m_status = "Stopped";
     std::string m_title;
     std::string m_artist;
+    std::string m_player_name;
 
     void query_mpris();
 };

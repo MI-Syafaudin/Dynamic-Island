@@ -71,6 +71,7 @@ bool Config::load_default() {
     colors.subtext = ColorRGBA::from_hex("#8e8e93", 1.0);
     colors.accent = ColorRGBA::from_hex("#38ef7d", 1.0);
     colors.accent_blue = ColorRGBA::from_hex("#0a84ff", 1.0);
+    colors.accent_purple = ColorRGBA::from_hex("#bf5af2", 1.0);
     colors.warning = ColorRGBA::from_hex("#ffd60a", 1.0);
     colors.danger = ColorRGBA::from_hex("#ff453a", 1.0);
     colors.card_bg = ColorRGBA::from_hex("#1c1c1e", 0.6);
@@ -121,6 +122,7 @@ bool Config::load_from_file(const std::string& path) {
         if (c.has("subtext")) colors.subtext = ColorRGBA::from_hex(c["subtext"].as_string(), 1.0);
         if (c.has("accent")) colors.accent = ColorRGBA::from_hex(c["accent"].as_string(), 1.0);
         if (c.has("accent_blue")) colors.accent_blue = ColorRGBA::from_hex(c["accent_blue"].as_string(), 1.0);
+        if (c.has("accent_purple")) colors.accent_purple = ColorRGBA::from_hex(c["accent_purple"].as_string(), 1.0);
         if (c.has("warning")) colors.warning = ColorRGBA::from_hex(c["warning"].as_string(), 1.0);
         if (c.has("danger")) colors.danger = ColorRGBA::from_hex(c["danger"].as_string(), 1.0);
         if (c.has("card_bg")) colors.card_bg = ColorRGBA::from_hex(c["card_bg"].as_string(), 0.6);

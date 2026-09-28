@@ -22,6 +22,7 @@ struct ThemeColors {
     ColorRGBA subtext;
     ColorRGBA accent;
     ColorRGBA accent_blue;
+    ColorRGBA accent_purple;
     ColorRGBA warning;
     ColorRGBA danger;
     ColorRGBA card_bg;

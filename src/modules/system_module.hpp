@@ -13,17 +13,22 @@ public:
 
     int get_cpu_percent() const { return m_cpu_percent; }
     int get_ram_percent() const { return m_ram_percent; }
+    int get_swap_percent() const { return m_swap_percent; }
     int get_gpu_percent() const { return m_gpu_percent; }
     int get_cpu_temp() const { return m_cpu_temp; }
 
 private:
     int m_cpu_percent = 0;
     int m_ram_percent = 0;
+    int m_swap_percent = 0;
     int m_gpu_percent = 0;
     int m_cpu_temp = 0;
 
     double m_ram_used_gb = 0.0;
     double m_ram_total_gb = 0.0;
+    double m_swap_used_gb = 0.0;
+    double m_swap_total_gb = 0.0;
+    bool m_is_zram = false;
 
     unsigned long long m_prev_total_jiffies = 0;
     unsigned long long m_prev_work_jiffies = 0;

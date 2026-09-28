@@ -29,7 +29,7 @@ Proyek ini dibangun dari awal dengan fokus utama pada **efisiensi ekstrem**, **k
 4. **Sinkronisasi Frame 60 Hz**: Animasi di-drive oleh callback VSync Wayland (`wl_surface_frame`), bukan `usleep` atau loop timer yang membebani CPU. Begitu animasi selesai, registrasi frame dihentikan total sehingga CPU langsung tidur (*zero wakeups*).
 5. **Event-Driven IPC & Konsistensi Metrik**:
    - Status workspace, fokus window, dan fullscreen didapat langsung secara real-time melalui push event dari Hyprland socket2 (`$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock`).
-   - Modul system monitor (CPU/RAM/GPU) diperbarui secara berkala dan efisien dengan pembacaan berbasis waktu (setiap 1.5 detik), dilengkapi ambang batas delta sampel minimum serta *Exponential Moving Average* (EMA) dan *multi-sampling* GPU guna menjamin metrik yang akurat, konsisten, dan bebas flicker.
+   - Modul system monitor (CPU/RAM/ZRAM/GPU) diperbarui secara berkala dan efisien dengan pembacaan berbasis waktu (setiap 1.5 detik), dilengkapi ambang batas delta sampel minimum serta *Exponential Moving Average* (EMA) dan *multi-sampling* GPU guna menjamin metrik yang akurat, konsisten, dan bebas flicker.
 6. **Adaptive Dynamic Width**: Lebar Dynamic Island saat idle/compact tidak kaku/statis, melainkan menghitung kebutuhan ruang modul secara dinamis menggunakan perekaman layout Pango-Cairo dan menganimasikannya secara halus (cubic ease-out 60 FPS). Status program aktif maupun modul lain tidak akan terpotong setengah.
 
 ---
@@ -95,10 +95,10 @@ dynamic_island/
 | **2. Workspace Hyprland** | **Tampilan Kompak 3 Workspace Dinamis**: Menampilkan tepat 3 workspace pada island (`[1, 2, 3]` saat workspace aktif ≤ 3). Jika user berpindah ke workspace > 3, jendela tampilan 3 workspace otomatis bergeser (`[ws - 1, ws, ws + 1]`) sehingga workspace aktif selalu tampil di tengah dengan pill accent. | Klik pada nomor workspace untuk berpindah langsung (`hyprctl dispatch workspace N`). Update realtime via socket2. |
 | **3. Active Window** | Menampilkan class/nama window aktif (misal `kitty`, `google-chrome`, `Visual Studio Code`). Lebar Dynamic Island menyesuaikan panjang nama/status program aktif secara otomatis (adaptive width) sehingga teks tidak terpotong setengah. | Terhubung dengan event `activewindow>>` Hyprland socket2. |
 | **4. Audio Control** | Terhubung ke PipeWire / WirePlumber via `wpctl`. Menampilkan persentase & status mute. | Otomatis ekspansi saat volume berubah. Scroll mouse pada island untuk atur volume. Klik untuk toggle mute. |
-| **5. Media Player** | Integrasi MPRIS (`playerctl`). Menampilkan judul lagu yang sedang diputar. | Klik untuk ekspansi: Info artis & tombol kendali `[⏮ Prev]`, `[⏯ Play/Pause]`, `[⏭ Next]`. |
+| **5. Media Player** | **Tampilan Modern & Rata Tengah**: Integrasi MPRIS (`playerctl`) dengan desain modern ala iOS Dynamic Island. Menampilkan judul lagu yang sedang diputar, nama artis, dan aplikasi sumber media. | Klik untuk ekspansi: Header pill status rata tengah (`󰝚 NOW PLAYING` / `󰝛 PAUSED` / nama player), judul track & artis di posisi tengah (*centered alignment*) dengan auto-ellipsis rapi, serta tombol kontrol playback modern `[󰒮 Prev]`, `[󰏤/󰐊 Play/Pause]`, `[󰒭 Next]` dengan jarak presisi tanpa saling menutupi. |
 | **6. Battery Status** | Membaca sysfs laptop (`/sys/class/power_supply/BAT*`). Menampilkan icon petir saat charging. | Indikator visual berubah merah saat baterai ≤ 20%. |
 | **7. Network Status** | Mendeteksi WiFi (dengan nama SSID) / Ethernet / Terputus via `nmcli` & sysfs. | Klik untuk ekspansi: Interface name & IP lokal. |
-| **8. System Monitor** | **Metrik Konsisten & Halus**: Menampilkan CPU %, RAM %, dan GPU % (Radeon Vega 3 / AMD / Intel / NVIDIA) secara konsisten dan realtime (update berkala 1.5s di compact dan expanded view) dengan filter EMA (Exponential Moving Average) dan GPU multi-sampling. | Klik untuk ekspansi: 3 progress bar horizontal halus + Temperatur CPU (°C) & detail penggunaan memori (GB). |
+| **8. System Monitor** | **Metrik Lengkap 4 Baris & Halus**: Menampilkan CPU %, RAM %, **ZRAM / Swap RAM %**, dan GPU % (Radeon Vega 3 / AMD / Intel / NVIDIA) secara konsisten dan realtime (update berkala 1.5s di compact dan expanded view) dengan filter EMA dan GPU multi-sampling. Otomatis mendeteksi perangkat ZRAM (`󰾴 ZRAM`) maupun swap disk (`󰾴 SWAP`). | Klik untuk ekspansi: 4 bar visual horizontal (CPU aksen hijau, RAM aksen biru, ZRAM/Swap aksen ungu, GPU aksen kuning) + Temperatur CPU (°C) & detail penggunaan memori fisik serta swap (GB). |
 | **9. Screenshot Tool** | Terintegrasi dengan `grim` + `slurp` + `wl-copy`. | Simpan otomatis ke `~/Pictures/Screenshots/`, salin ke clipboard, dan memunculkan banner "📸 Screenshot Captured!". |
 | **10. Notifications** | Banner notifikasi mandiri tanpa daemon berat. | Menerima notifikasi via `dynamic-island notify "App" "Message"` dan otomatis collapse setelah 4.5 detik. |
 | **11. Quick Actions** | Panel kontrol cepat saat klik kanan atau shortcut. | Tombol pill: `[WiFi]`, `[Bluetooth]`, `[Mute]`, `[Night Light]`, `[Screenshot]`, `[Power]`. |
@@ -186,6 +186,7 @@ dynamic-island reload
     "subtext": "#8e8e93",
     "accent": "#38ef7d",
     "accent_blue": "#0a84ff",
+    "accent_purple": "#bf5af2",
     "warning": "#ffd60a",
     "danger": "#ff453a",
     "card_bg": "#1c1c1e"
@@ -244,8 +245,8 @@ dynamic-island reload
 | :--- | :--- |
 | `SUPER + I` | Toggle Dynamic Island (Ekspansi / Collapse) |
 | `SUPER + V` | Buka popup kontrol Volume |
-| `SUPER + M` | Buka pemutar media (Now Playing & controls) |
-| `SUPER + S` | Buka System Monitor (CPU, RAM, GPU Vega 3, Temp) |
+| `SUPER + M` | Buka pemutar media (Now Playing & controls modern) |
+| `SUPER + S` | Buka System Monitor (CPU, RAM, ZRAM/Swap, GPU Vega 3, Temp) |
 | `SUPER + C` | Buka Kalender & Waktu Lengkap |
 | `SUPER + N` | Buka Status Jaringan |
 | `Print` | Ambil screenshot layar penuh |

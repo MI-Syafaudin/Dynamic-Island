@@ -52,6 +52,23 @@ SystemModule::SystemModule() {
         m_gpu_name = "(Radeon Vega 3)";
     }
 
+    // Check if swap is zram
+    m_is_zram = false;
+    if (std::filesystem::exists("/sys/block/zram0")) {
+        m_is_zram = true;
+    } else {
+        std::ifstream swaps("/proc/swaps");
+        if (swaps.is_open()) {
+            std::string s_line;
+            while (std::getline(swaps, s_line)) {
+                if (s_line.find("zram") != std::string::npos) {
+                    m_is_zram = true;
+                    break;
+                }
+            }
+        }
+    }
+
     // Seed initial CPU sample
     update_cpu();
     std::this_thread::sleep_for(std::chrono::milliseconds(80));
@@ -115,6 +132,8 @@ void SystemModule::update_ram() {
 
     unsigned long long mem_total_kb = 0;
     unsigned long long mem_avail_kb = 0;
+    unsigned long long swap_total_kb = 0;
+    unsigned long long swap_free_kb = 0;
     std::string key;
     unsigned long long val;
     std::string unit;
@@ -122,14 +141,27 @@ void SystemModule::update_ram() {
     while (file >> key >> val >> unit) {
         if (key == "MemTotal:") mem_total_kb = val;
         else if (key == "MemAvailable:") mem_avail_kb = val;
-        if (mem_total_kb > 0 && mem_avail_kb > 0) break;
+        else if (key == "SwapTotal:") swap_total_kb = val;
+        else if (key == "SwapFree:") swap_free_kb = val;
+        if (mem_total_kb > 0 && mem_avail_kb > 0 && swap_total_kb > 0 && swap_free_kb > 0) break;
     }
 
     if (mem_total_kb > 0) {
-        unsigned long long mem_used_kb = mem_total_kb - mem_avail_kb;
+        unsigned long long mem_used_kb = (mem_total_kb >= mem_avail_kb) ? (mem_total_kb - mem_avail_kb) : 0;
         m_ram_percent = std::clamp(static_cast<int>(std::round((mem_used_kb * 100.0) / mem_total_kb)), 0, 100);
         m_ram_used_gb = mem_used_kb / 1048576.0;
         m_ram_total_gb = mem_total_kb / 1048576.0;
+    }
+
+    if (swap_total_kb > 0) {
+        unsigned long long swap_used_kb = (swap_total_kb >= swap_free_kb) ? (swap_total_kb - swap_free_kb) : 0;
+        m_swap_percent = std::clamp(static_cast<int>(std::round((swap_used_kb * 100.0) / swap_total_kb)), 0, 100);
+        m_swap_used_gb = swap_used_kb / 1048576.0;
+        m_swap_total_gb = swap_total_kb / 1048576.0;
+    } else {
+        m_swap_percent = 0;
+        m_swap_used_gb = 0.0;
+        m_swap_total_gb = 0.0;
     }
 }
 
@@ -259,15 +291,25 @@ void SystemModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, c
 
     // Row 1: CPU
     std::string cpu_extra = "• " + std::to_string(m_cpu_temp) + "°C";
-    draw_metric_row(10, " CPU", m_cpu_percent, cpu_extra, config.colors.accent);
+    draw_metric_row(12, " CPU", m_cpu_percent, cpu_extra, config.colors.accent);
 
     // Row 2: RAM
     std::stringstream ram_ss;
     ram_ss << "(" << std::fixed << std::setprecision(1) << m_ram_used_gb << " / " << m_ram_total_gb << " GB)";
-    draw_metric_row(40, "󰘚 RAM", m_ram_percent, ram_ss.str(), config.colors.accent_blue);
+    draw_metric_row(42, "󰘚 RAM", m_ram_percent, ram_ss.str(), config.colors.accent_blue);
 
-    // Row 3: GPU
-    draw_metric_row(70, "󰢮 GPU", m_gpu_percent, m_gpu_name, config.colors.warning);
+    // Row 3: ZRAM / SWAP
+    std::string swap_label = m_is_zram ? "󰾴 ZRAM" : "󰾴 SWAP";
+    std::stringstream swap_ss;
+    if (m_swap_total_gb > 0) {
+        swap_ss << "(" << std::fixed << std::setprecision(1) << m_swap_used_gb << " / " << m_swap_total_gb << " GB)";
+    } else {
+        swap_ss << "(None)";
+    }
+    draw_metric_row(72, swap_label, m_swap_percent, swap_ss.str(), config.colors.accent_purple);
+
+    // Row 4: GPU
+    draw_metric_row(102, "󰢮 GPU", m_gpu_percent, m_gpu_name, config.colors.warning);
 
     g_object_unref(layout);
 

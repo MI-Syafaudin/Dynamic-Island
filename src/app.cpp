@@ -199,11 +199,11 @@ void App::get_target_dimensions(IslandMode mode, double& w, double& h) {
             break;
         case IslandMode::Expanded_Media:
             w = 380.0;
-            h = 82.0;
+            h = 124.0;
             break;
         case IslandMode::Expanded_System:
             w = 340.0;
-            h = 104.0;
+            h = 136.0;
             break;
         case IslandMode::Expanded_Clock:
             w = 320.0;
@@ -246,6 +246,10 @@ void App::expand_to(IslandMode mode, int timeout_ms) {
     if (mode == IslandMode::Expanded_System && m_sys_mod) {
         m_sys_mod->update();
         m_last_system_update = m_anim_start;
+    }
+    if (mode == IslandMode::Expanded_Media && m_media_mod) {
+        m_media_mod->update();
+        m_last_media_update = m_anim_start;
     }
 
     if (timeout_ms > 0) {
