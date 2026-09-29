@@ -16,6 +16,7 @@ public:
 
     bool init(const Config& config);
     void update_font(const Config& config);
+    PangoFontDescription* get_font_desc() const { return m_font_desc; }
 
     int calculate_compact_width(
         const Config& config,

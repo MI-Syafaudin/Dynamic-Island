@@ -229,12 +229,20 @@ void App::get_target_dimensions(IslandMode mode, double& w, double& h) {
             h = 76.0;
             break;
         case IslandMode::Expanded_Notification:
-            w = 360.0;
-            h = 66.0;
+            if (m_notif_mod) {
+                m_notif_mod->get_preferred_dimensions(m_renderer.get_font_desc(), m_config, w, h);
+            } else {
+                w = 360.0;
+                h = 66.0;
+            }
             break;
         case IslandMode::Expanded_Screenshot:
-            w = 300.0;
-            h = 50.0;
+            if (m_shot_mod) {
+                m_shot_mod->get_preferred_dimensions(m_renderer.get_font_desc(), m_config, w, h);
+            } else {
+                w = 360.0;
+                h = 64.0;
+            }
             break;
         case IslandMode::Expanded_QuickActions:
             w = 340.0;
@@ -252,6 +260,19 @@ void App::expand_to(IslandMode mode, int timeout_ms) {
         if (timeout_ms > 0) {
             m_has_auto_collapse = true;
             m_auto_collapse_time = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+        }
+        double new_target_w = m_target_w;
+        double new_target_h = m_target_h;
+        get_target_dimensions(m_mode, new_target_w, new_target_h);
+        if (std::abs(new_target_w - m_curr_w) > 1.0 || std::abs(new_target_h - m_curr_h) > 1.0) {
+            m_start_w = m_curr_w;
+            m_start_h = m_curr_h;
+            m_target_w = new_target_w;
+            m_target_h = new_target_h;
+            m_animating = true;
+            m_anim_start = std::chrono::steady_clock::now();
+            m_wayland.request_frame_callback();
+            return;
         }
         if (!m_animating) {
             render_current_state();
@@ -436,6 +457,10 @@ void App::on_mouse_button(double x, double y, uint32_t button, bool pressed) {
                     else if (hb.param == "network") toggle_mode(IslandMode::Expanded_Network);
                     else if (hb.param == "notification") toggle_mode(IslandMode::Expanded_Notification);
                     else if (hb.param == "quick") toggle_mode(IslandMode::Expanded_QuickActions);
+                    return;
+                }
+                if (hb.action == "qa_shot") {
+                    capture_screenshot(true);
                     return;
                 }
 
