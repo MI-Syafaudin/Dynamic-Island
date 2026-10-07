@@ -37,6 +37,8 @@ public:
 
 private:
     PangoFontDescription* m_font_desc = nullptr;
+    cairo_surface_t* m_measure_surface = nullptr;
+    cairo_t* m_measure_cr = nullptr;
 
     void draw_rounded_rect(cairo_t* cr, double x, double y, double w, double h, double r);
     void draw_brightness_expanded(cairo_t* cr, const Config& config, int w, int h, int brightness_val, std::vector<HitBox>& hitboxes);

@@ -13,6 +13,7 @@
   "adaptive_width": true,
   "max_idle_width": 850,
   "max_window_title_length": 28,
+  "window_display_mode": "icon",
   "colors": {
     "background": "#111111",
     "border": "#2c2c2e",

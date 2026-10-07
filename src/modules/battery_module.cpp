@@ -28,18 +28,22 @@ void BatteryModule::detect_battery_path() {
 void BatteryModule::read_battery_sysfs() {
     if (!m_available || m_bat_path.empty()) return;
 
-    // Read capacity
-    std::ifstream cap_file(m_bat_path + "/capacity");
-    if (cap_file.is_open()) {
-        cap_file >> m_percentage;
+    FILE* cap_file = fopen((m_bat_path + "/capacity").c_str(), "r");
+    if (cap_file) {
+        int cap = 0;
+        if (fscanf(cap_file, "%d", &cap) == 1) {
+            m_percentage = cap;
+        }
+        fclose(cap_file);
     }
 
-    // Read status
-    std::ifstream status_file(m_bat_path + "/status");
-    if (status_file.is_open()) {
-        std::string st;
-        status_file >> st;
-        m_charging = (st == "Charging");
+    FILE* status_file = fopen((m_bat_path + "/status").c_str(), "r");
+    if (status_file) {
+        char st[32];
+        if (fscanf(status_file, "%31s", st) == 1) {
+            m_charging = (strcmp(st, "Charging") == 0);
+        }
+        fclose(status_file);
     }
 }
 

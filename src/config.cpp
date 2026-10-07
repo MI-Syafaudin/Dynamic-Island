@@ -113,6 +113,7 @@ bool Config::load_from_file(const std::string& path) {
     if (root.has("adaptive_width")) adaptive_width = root["adaptive_width"].as_bool(adaptive_width);
     if (root.has("max_idle_width")) max_idle_width = root["max_idle_width"].as_int(max_idle_width);
     if (root.has("max_window_title_length")) max_window_title_length = root["max_window_title_length"].as_int(max_window_title_length);
+    if (root.has("window_display_mode")) window_display_mode = root["window_display_mode"].as_string(window_display_mode);
 
     if (root.has("colors") && root["colors"].is_object()) {
         const auto& c = root["colors"];

@@ -63,7 +63,9 @@ int main(int argc, char** argv) {
             return 0;
         } else {
             if (first_arg == "toggle" || first_arg == "expand" || first_arg == "volume") {
-                std::cerr << "Dynamic Island is not running. Starting daemon...\n";
+                std::cerr << "Dynamic Island is not running. Starting daemon in background...\n";
+                std::system("dynamic-island >/dev/null 2>&1 &");
+                return 0;
             } else {
                 std::cerr << "Dynamic Island is not running.\n";
                 return 1;

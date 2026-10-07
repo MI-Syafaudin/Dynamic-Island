@@ -67,7 +67,10 @@ install: $(BIN)
 user-install: $(BIN)
 	install -d $(HOME)/.local/bin
 	install -m 755 $(BIN) $(HOME)/.local/bin/dynamic-island
+	install -m 755 scripts/power_menu.sh $(HOME)/.local/bin/dynamic-island-powermenu
 	install -d $(HOME)/.config/dynamic-island
+	install -d $(HOME)/.config/dynamic-island/shaders
 	install -m 644 config/config.json $(HOME)/.config/dynamic-island/config.json
+	install -m 644 shaders/nightmode.frag $(HOME)/.config/dynamic-island/shaders/nightmode.frag
 
 .PHONY: all clean install user-install

@@ -50,8 +50,27 @@ void QuickActionModule::query_states() {
         m_mute_active = (out.find("[MUTED]") != std::string::npos);
     }
 
-    // 4. Night light state: pgrep -x hyprsunset
-    m_night_active = (std::system("pgrep -x hyprsunset >/dev/null 2>&1") == 0);
+    // 4. Night light state: check processes (hyprsunset, wlsunset, gammastep) or Hyprland screen_shader
+    bool proc_running = (std::system("pgrep -x hyprsunset >/dev/null 2>&1 || pgrep -x wlsunset >/dev/null 2>&1 || pgrep -x gammastep >/dev/null 2>&1") == 0);
+    bool shader_active = false;
+    if (!proc_running) {
+        FILE* fp_sh = popen("hyprctl getoption decoration:screen_shader -j 2>/dev/null", "r");
+        if (fp_sh) {
+            char sbuf[256];
+            std::string sout;
+            while (fgets(sbuf, sizeof(sbuf), fp_sh)) sout += sbuf;
+            pclose(fp_sh);
+            size_t str_pos = sout.find("\"str\":");
+            if (str_pos != std::string::npos) {
+                size_t q1 = sout.find('"', str_pos + 6);
+                size_t q2 = (q1 != std::string::npos) ? sout.find('"', q1 + 1) : std::string::npos;
+                if (q1 != std::string::npos && q2 != std::string::npos && q2 > q1 + 1) {
+                    shader_active = true;
+                }
+            }
+        }
+    }
+    m_night_active = proc_running || shader_active;
 }
 
 void QuickActionModule::update() {
@@ -115,6 +134,9 @@ void QuickActionModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_de
     int total_btns_w = buttons.size() * btn_w + (buttons.size() - 1) * 8;
     int start_x = (w - total_btns_w) / 2;
 
+    PangoFontDescription* small_desc = pango_font_description_copy(font_desc);
+    pango_font_description_set_size(small_desc, 8 * PANGO_SCALE);
+
     for (size_t i = 0; i < buttons.size(); ++i) {
         int bx = start_x + i * (btn_w + 8);
 
@@ -154,6 +176,7 @@ void QuickActionModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_de
         }
 
         // Icon
+        pango_layout_set_font_description(layout, font_desc);
         pango_layout_set_text(layout, buttons[i].icon.c_str(), -1);
         int tw, th;
         pango_layout_get_pixel_size(layout, &tw, &th);
@@ -170,8 +193,6 @@ void QuickActionModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_de
         pango_cairo_show_layout(cr, layout);
 
         // Label
-        PangoFontDescription* small_desc = pango_font_description_copy(font_desc);
-        pango_font_description_set_size(small_desc, 8 * PANGO_SCALE);
         pango_layout_set_font_description(layout, small_desc);
         pango_layout_set_text(layout, buttons[i].label.c_str(), -1);
         pango_layout_get_pixel_size(layout, &tw, &th);
@@ -186,12 +207,11 @@ void QuickActionModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_de
         }
         cairo_move_to(cr, bx + (btn_w - tw) / 2, btn_y + 20);
         pango_cairo_show_layout(cr, layout);
-        pango_font_description_free(small_desc);
-        pango_layout_set_font_description(layout, font_desc);
 
         hitboxes.push_back({bx, btn_y, btn_w, btn_h, buttons[i].action, ""});
     }
 
+    pango_font_description_free(small_desc);
     g_object_unref(layout);
 }
 
@@ -223,9 +243,19 @@ bool QuickActionModule::handle_click(const std::string& action, const std::strin
     if (action == "qa_night") {
         m_night_active = !m_night_active;
         if (m_night_active) {
-            std::system("hyprsunset --temperature 4500 &");
+            std::system("if command -v hyprsunset >/dev/null 2>&1; then hyprsunset --temperature 4500 & "
+                        "elif command -v wlsunset >/dev/null 2>&1; then wlsunset -t 4500 & "
+                        "elif command -v gammastep >/dev/null 2>&1; then gammastep -O 4500 & "
+                        "else "
+                        "  SHADER=\"$HOME/.config/dynamic-island/shaders/nightmode.frag\"; "
+                        "  [ ! -f \"$SHADER\" ] && SHADER=\"$HOME/Projects/dynamic_island/shaders/nightmode.frag\"; "
+                        "  [ -f \"$SHADER\" ] && hyprctl keyword decoration:screen_shader \"$SHADER\" >/dev/null 2>&1; "
+                        "fi &");
         } else {
-            std::system("pkill hyprsunset &");
+            std::system("pkill -x hyprsunset >/dev/null 2>&1; "
+                        "pkill -x wlsunset >/dev/null 2>&1; "
+                        "pkill -x gammastep >/dev/null 2>&1; "
+                        "hyprctl keyword decoration:screen_shader \"\" >/dev/null 2>&1 &");
         }
         return true;
     }
@@ -234,7 +264,14 @@ bool QuickActionModule::handle_click(const std::string& action, const std::strin
         return true;
     }
     if (action == "qa_power") {
-        std::system("which wlogout >/dev/null && wlogout & || hyprlock &");
+        std::system("if command -v dynamic-island-powermenu >/dev/null 2>&1; then dynamic-island-powermenu & "
+                    "elif [ -x \"$HOME/.local/bin/dynamic-island-powermenu\" ]; then \"$HOME/.local/bin/dynamic-island-powermenu\" & "
+                    "elif [ -x \"$HOME/Projects/dynamic_island/scripts/power_menu.sh\" ]; then \"$HOME/Projects/dynamic_island/scripts/power_menu.sh\" & "
+                    "elif command -v wlogout >/dev/null 2>&1; then wlogout -b 2 & "
+                    "elif command -v rofi >/dev/null 2>&1; then "
+                    "  CHOICE=$(echo -e \"󰐥  Shutdown\\n󰜉  Restart\\n󰌾  Lock Screen\\n󰤄  Suspend\\n󰗽  Log Out\" | rofi -dmenu -i -p \"Power Menu\"); "
+                    "  case \"$CHOICE\" in *\"Shutdown\"*) systemctl poweroff;; *\"Restart\"*) systemctl reboot;; *\"Lock\"*) hyprlock &;; *\"Suspend\"*) systemctl suspend;; *\"Log Out\"*) hyprctl dispatch exit;; esac; "
+                    "else systemctl poweroff; fi &");
         return true;
     }
     return false;

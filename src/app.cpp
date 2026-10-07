@@ -501,6 +501,17 @@ void App::on_mouse_scroll(double delta) {
 
 std::string App::handle_ipc_command(const std::string& cmd, const std::vector<std::string>& args) {
     if (cmd == "toggle") {
+        if (!args.empty()) {
+            std::string target = args[0];
+            if (target == "audio") toggle_mode(IslandMode::Expanded_Audio);
+            else if (target == "brightness") toggle_mode(IslandMode::Expanded_Brightness);
+            else if (target == "media") toggle_mode(IslandMode::Expanded_Media);
+            else if (target == "system") toggle_mode(IslandMode::Expanded_System);
+            else if (target == "clock") toggle_mode(IslandMode::Expanded_Clock);
+            else if (target == "network") toggle_mode(IslandMode::Expanded_Network);
+            else if (target == "quick") toggle_mode(IslandMode::Expanded_QuickActions);
+            return "OK";
+        }
         if (m_mode == IslandMode::Idle) {
             if (m_quick_mod) m_quick_mod->update();
             expand_to(IslandMode::Expanded_QuickActions, 0);
@@ -517,23 +528,51 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
         if (!args.empty()) {
             std::string target = args[0];
             if (target == "audio") {
-                if (m_audio_mod) m_audio_mod->update();
-                expand_to(IslandMode::Expanded_Audio, m_config.timeouts.volume_ms);
+                if (m_mode == IslandMode::Expanded_Audio) {
+                    collapse();
+                } else {
+                    if (m_audio_mod) m_audio_mod->update();
+                    expand_to(IslandMode::Expanded_Audio, m_config.timeouts.volume_ms);
+                }
             } else if (target == "brightness") {
-                query_brightness();
-                expand_to(IslandMode::Expanded_Brightness, m_config.timeouts.brightness_ms);
+                if (m_mode == IslandMode::Expanded_Brightness) {
+                    collapse();
+                } else {
+                    query_brightness();
+                    expand_to(IslandMode::Expanded_Brightness, m_config.timeouts.brightness_ms);
+                }
             } else if (target == "media") {
-                expand_to(IslandMode::Expanded_Media, 0);
+                if (m_mode == IslandMode::Expanded_Media) {
+                    collapse();
+                } else {
+                    expand_to(IslandMode::Expanded_Media, 0);
+                }
             } else if (target == "system") {
-                expand_to(IslandMode::Expanded_System, 0);
+                if (m_mode == IslandMode::Expanded_System) {
+                    collapse();
+                } else {
+                    expand_to(IslandMode::Expanded_System, 0);
+                }
             } else if (target == "clock") {
-                expand_to(IslandMode::Expanded_Clock, 0);
+                if (m_mode == IslandMode::Expanded_Clock) {
+                    collapse();
+                } else {
+                    expand_to(IslandMode::Expanded_Clock, 0);
+                }
             } else if (target == "network") {
-                if (m_net_mod) m_net_mod->update();
-                expand_to(IslandMode::Expanded_Network, 0);
+                if (m_mode == IslandMode::Expanded_Network) {
+                    collapse();
+                } else {
+                    if (m_net_mod) m_net_mod->update();
+                    expand_to(IslandMode::Expanded_Network, 0);
+                }
             } else if (target == "quick") {
-                if (m_quick_mod) m_quick_mod->update();
-                expand_to(IslandMode::Expanded_QuickActions, 0);
+                if (m_mode == IslandMode::Expanded_QuickActions) {
+                    collapse();
+                } else {
+                    if (m_quick_mod) m_quick_mod->update();
+                    expand_to(IslandMode::Expanded_QuickActions, 0);
+                }
             }
             return "OK";
         }
@@ -717,8 +756,14 @@ void App::run() {
             if (m_clock_mod) {
                 m_clock_mod->update();
             }
-            if (m_mode == IslandMode::Idle || m_mode == IslandMode::Expanded_Clock) {
+            if (m_mode == IslandMode::Expanded_Clock) {
                 render_current_state();
+            } else if (m_mode == IslandMode::Idle) {
+                static std::string last_idle_time;
+                if (m_clock_mod && m_clock_mod->get_time_str() != last_idle_time) {
+                    last_idle_time = m_clock_mod->get_time_str();
+                    render_current_state();
+                }
             }
         }
 
@@ -729,7 +774,7 @@ void App::run() {
             if (m_mode == IslandMode::Expanded_System) {
                 render_current_state();
             } else if (m_mode == IslandMode::Idle) {
-                update_idle_dimensions(false);
+                render_current_state();
             }
         }
 
@@ -746,14 +791,14 @@ void App::run() {
             }
         }
 
-        // Periodic Slow update: Battery, Network, Audio, Brightness, Quick Controls (every 5s)
+        // Periodic Slow update: Battery, Network, Audio, Quick Controls (every 5s)
         if (std::chrono::duration_cast<std::chrono::seconds>(now - m_last_slow_update).count() >= 5) {
             m_last_slow_update = now;
             if (m_bat_mod) m_bat_mod->update();
             if (m_net_mod) m_net_mod->update();
             if (m_audio_mod) m_audio_mod->update();
             if (m_quick_mod && m_mode == IslandMode::Expanded_QuickActions) m_quick_mod->update();
-            query_brightness();
+            if (m_mode == IslandMode::Expanded_Brightness) query_brightness();
             if (m_mode == IslandMode::Idle) {
                 update_idle_dimensions(true);
             } else if (m_mode == IslandMode::Expanded_QuickActions || m_mode == IslandMode::Expanded_Audio || m_mode == IslandMode::Expanded_Brightness) {

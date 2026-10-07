@@ -15,9 +15,9 @@ void ClockModule::update_uptime() {
         long uptime = s_info.uptime;
         int hours = uptime / 3600;
         int minutes = (uptime % 3600) / 60;
-        std::stringstream ss;
-        ss << "Uptime: " << hours << "h " << minutes << "m";
-        m_uptime_str = ss.str();
+        char buf[64];
+        snprintf(buf, sizeof(buf), "Uptime: %dh %dm", hours, minutes);
+        m_uptime_str = buf;
     } else {
         m_uptime_str = "Uptime: --";
     }

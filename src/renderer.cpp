@@ -8,6 +8,14 @@ namespace di {
 Renderer::Renderer() {}
 
 Renderer::~Renderer() {
+    if (m_measure_cr) {
+        cairo_destroy(m_measure_cr);
+        m_measure_cr = nullptr;
+    }
+    if (m_measure_surface) {
+        cairo_surface_destroy(m_measure_surface);
+        m_measure_surface = nullptr;
+    }
     if (m_font_desc) {
         pango_font_description_free(m_font_desc);
         m_font_desc = nullptr;
@@ -16,6 +24,12 @@ Renderer::~Renderer() {
 
 bool Renderer::init(const Config& config) {
     update_font(config);
+    if (!m_measure_surface) {
+        m_measure_surface = cairo_image_surface_create(CAIRO_FORMAT_A8, 1, 1);
+        if (m_measure_surface) {
+            m_measure_cr = cairo_create(m_measure_surface);
+        }
+    }
     return true;
 }
 
@@ -33,13 +47,13 @@ int Renderer::calculate_compact_width(
 ) {
     if (!m_font_desc) return config.idle_width;
 
-    cairo_surface_t* surface = cairo_recording_surface_create(CAIRO_CONTENT_COLOR_ALPHA, nullptr);
-    if (!surface) return config.idle_width;
-
-    cairo_t* cr = cairo_create(surface);
+    cairo_t* cr = m_measure_cr;
+    bool free_cr = false;
+    cairo_surface_t* temp_surf = nullptr;
     if (!cr) {
-        cairo_surface_destroy(surface);
-        return config.idle_width;
+        temp_surf = cairo_image_surface_create(CAIRO_FORMAT_A8, 1, 1);
+        cr = cairo_create(temp_surf);
+        free_cr = true;
     }
 
     int current_x = 14;
@@ -53,8 +67,10 @@ int Renderer::calculate_compact_width(
         }
     }
 
-    cairo_destroy(cr);
-    cairo_surface_destroy(surface);
+    if (free_cr) {
+        cairo_destroy(cr);
+        if (temp_surf) cairo_surface_destroy(temp_surf);
+    }
 
     int total_w = current_x + 4;
     return total_w;

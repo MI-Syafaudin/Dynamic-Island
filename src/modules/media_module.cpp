@@ -11,69 +11,63 @@ MediaModule::MediaModule() {
 }
 
 void MediaModule::query_mpris() {
-    // Query status
-    FILE* fp = popen("playerctl status 2>/dev/null", "r");
-    if (fp) {
-        char buffer[64];
-        if (fgets(buffer, sizeof(buffer), fp) != nullptr) {
-            std::string st = buffer;
-            while (!st.empty() && (st.back() == '\n' || st.back() == '\r')) st.pop_back();
-            m_status = st;
-        } else {
-            m_status = "Stopped";
-        }
-        pclose(fp);
-    } else {
+    FILE* fp = popen("playerctl metadata --format '{{status}}:::{{playerName}}:::{{artist}}:::{{title}}' 2>/dev/null", "r");
+    if (!fp) {
         m_status = "Stopped";
-    }
-
-    if (m_status == "Stopped" || m_status.empty()) {
         m_title.clear();
         m_artist.clear();
         m_player_name.clear();
         return;
     }
 
-    // Query Title
-    fp = popen("playerctl metadata title 2>/dev/null", "r");
-    if (fp) {
-        char buffer[256];
-        if (fgets(buffer, sizeof(buffer), fp) != nullptr) {
-            std::string t = buffer;
-            while (!t.empty() && (t.back() == '\n' || t.back() == '\r')) t.pop_back();
-            m_title = t;
-        } else {
-            m_title.clear();
-        }
-        pclose(fp);
+    char buffer[512];
+    std::string line;
+    if (fgets(buffer, sizeof(buffer), fp) != nullptr) {
+        line = buffer;
+        while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
+    }
+    pclose(fp);
+
+    if (line.empty()) {
+        m_status = "Stopped";
+        m_title.clear();
+        m_artist.clear();
+        m_player_name.clear();
+        return;
     }
 
-    // Query Artist
-    fp = popen("playerctl metadata artist 2>/dev/null", "r");
-    if (fp) {
-        char buffer[256];
-        if (fgets(buffer, sizeof(buffer), fp) != nullptr) {
-            std::string a = buffer;
-            while (!a.empty() && (a.back() == '\n' || a.back() == '\r')) a.pop_back();
-            m_artist = a;
-        } else {
-            m_artist.clear();
-        }
-        pclose(fp);
+    size_t p1 = line.find(":::");
+    if (p1 == std::string::npos) {
+        m_status = line;
+        m_title.clear();
+        m_artist.clear();
+        m_player_name.clear();
+        return;
     }
+    m_status = line.substr(0, p1);
 
-    // Query Player Name
-    fp = popen("playerctl metadata --format '{{playerName}}' 2>/dev/null", "r");
-    if (fp) {
-        char buffer[128];
-        if (fgets(buffer, sizeof(buffer), fp) != nullptr) {
-            std::string p = buffer;
-            while (!p.empty() && (p.back() == '\n' || p.back() == '\r')) p.pop_back();
-            m_player_name = p;
-        } else {
-            m_player_name.clear();
-        }
-        pclose(fp);
+    size_t p2 = line.find(":::", p1 + 3);
+    if (p2 == std::string::npos) {
+        m_player_name = line.substr(p1 + 3);
+        m_artist.clear();
+        m_title.clear();
+        return;
+    }
+    m_player_name = line.substr(p1 + 3, p2 - (p1 + 3));
+
+    size_t p3 = line.find(":::", p2 + 3);
+    if (p3 == std::string::npos) {
+        m_artist = line.substr(p2 + 3);
+        m_title.clear();
+        return;
+    }
+    m_artist = line.substr(p2 + 3, p3 - (p2 + 3));
+    m_title = line.substr(p3 + 3);
+
+    if (m_status == "Stopped") {
+        m_title.clear();
+        m_artist.clear();
+        m_player_name.clear();
     }
 }
 

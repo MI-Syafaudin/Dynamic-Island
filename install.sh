@@ -102,11 +102,15 @@ if [ ! -f "build/dynamic-island" ]; then
 fi
 echo -e "${COLOR_GREEN}[OK] Build successful! Binary size: $(ls -lh build/dynamic-island | awk '{print $5}')${COLOR_RESET}"
 
-# 5. Install Binary
+# 5. Install Binary & Helper Scripts
 INSTALL_DIR="$HOME/.local/bin"
 mkdir -p "$INSTALL_DIR"
 cp -f build/dynamic-island "$INSTALL_DIR/dynamic-island"
 chmod +x "$INSTALL_DIR/dynamic-island"
+if [ -f "scripts/power_menu.sh" ]; then
+    cp -f scripts/power_menu.sh "$INSTALL_DIR/dynamic-island-powermenu"
+    chmod +x "$INSTALL_DIR/dynamic-island-powermenu"
+fi
 echo -e "${COLOR_GREEN}[OK] Installed binary to:${COLOR_RESET} $INSTALL_DIR/dynamic-island"
 
 # Check PATH
@@ -115,10 +119,15 @@ if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
     echo -e "Consider adding: 'export PATH=\"\$HOME/.local/bin:\$PATH\"' to ~/.config/fish/config.fish or ~/.bashrc"
 fi
 
-# 6. Install Configuration & Themes
+# 6. Install Configuration, Themes & Shaders
 CONFIG_DIR="$HOME/.config/dynamic-island"
 mkdir -p "$CONFIG_DIR"
 mkdir -p "$CONFIG_DIR/themes"
+mkdir -p "$CONFIG_DIR/shaders"
+
+if [ -f "shaders/nightmode.frag" ]; then
+    cp -f shaders/nightmode.frag "$CONFIG_DIR/shaders/nightmode.frag"
+fi
 
 if [ ! -f "$CONFIG_DIR/config.json" ]; then
     cp -f config/config.json "$CONFIG_DIR/config.json"
@@ -128,7 +137,7 @@ else
 fi
 
 cp -rf themes/* "$CONFIG_DIR/themes/"
-echo -e "${COLOR_GREEN}[OK] Installed themes to:${COLOR_RESET} $CONFIG_DIR/themes/"
+echo -e "${COLOR_GREEN}[OK] Installed themes & shaders to:${COLOR_RESET} $CONFIG_DIR/"
 
 # 7. Configure Hyprland Autostart and Keybindings
 HYPR_DIR="$HOME/.config/hypr"

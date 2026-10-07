@@ -71,80 +71,74 @@ SystemModule::SystemModule() {
 
     // Seed initial CPU sample
     update_cpu();
-    std::this_thread::sleep_for(std::chrono::milliseconds(80));
-    update_cpu();
     update_ram();
     update_gpu();
     update_temp();
 }
 
 void SystemModule::update_cpu() {
-    std::ifstream file("/proc/stat");
-    if (!file.is_open()) return;
+    FILE* file = fopen("/proc/stat", "r");
+    if (!file) return;
 
-    std::string line;
-    if (std::getline(file, line)) {
-        if (line.substr(0, 4) == "cpu ") {
-            std::istringstream ss(line.substr(5));
-            unsigned long long user, nice, system, idle, iowait, irq, softirq, steal;
-            if (ss >> user >> nice >> system >> idle >> iowait >> irq >> softirq >> steal) {
+    char line[256];
+    if (fgets(line, sizeof(line), file)) {
+        if (strncmp(line, "cpu ", 4) == 0) {
+            unsigned long long user = 0, nice = 0, system = 0, idle = 0, iowait = 0, irq = 0, softirq = 0, steal = 0;
+            if (sscanf(line + 4, "%llu %llu %llu %llu %llu %llu %llu %llu",
+                       &user, &nice, &system, &idle, &iowait, &irq, &softirq, &steal) >= 4) {
                 unsigned long long work_jiffies = user + nice + system + irq + softirq + steal;
                 unsigned long long total_jiffies = work_jiffies + idle + iowait;
 
                 if (m_prev_total_jiffies == 0) {
                     m_prev_total_jiffies = total_jiffies;
                     m_prev_work_jiffies = work_jiffies;
+                    fclose(file);
                     return;
                 }
 
-                if (total_jiffies <= m_prev_total_jiffies) {
-                    return;
+                if (total_jiffies > m_prev_total_jiffies) {
+                    unsigned long long total_delta = total_jiffies - m_prev_total_jiffies;
+                    if (total_delta >= 15) {
+                        unsigned long long work_delta = (work_jiffies >= m_prev_work_jiffies)
+                                                        ? (work_jiffies - m_prev_work_jiffies)
+                                                        : 0;
+                        int raw_cpu = std::clamp(static_cast<int>(std::round((work_delta * 100.0) / total_delta)), 0, 100);
+
+                        if (m_cpu_percent == 0) {
+                            m_cpu_percent = raw_cpu;
+                        } else {
+                            m_cpu_percent = std::clamp(static_cast<int>(std::round(0.70 * raw_cpu + 0.30 * m_cpu_percent)), 0, 100);
+                        }
+
+                        m_prev_total_jiffies = total_jiffies;
+                        m_prev_work_jiffies = work_jiffies;
+                    }
                 }
-
-                unsigned long long total_delta = total_jiffies - m_prev_total_jiffies;
-                // Require at least 15 jiffies (~150ms) to prevent volatile readings
-                if (total_delta < 15) {
-                    return;
-                }
-
-                unsigned long long work_delta = (work_jiffies >= m_prev_work_jiffies)
-                                                ? (work_jiffies - m_prev_work_jiffies)
-                                                : 0;
-                int raw_cpu = std::clamp(static_cast<int>(std::round((work_delta * 100.0) / total_delta)), 0, 100);
-
-                if (m_cpu_percent == 0) {
-                    m_cpu_percent = raw_cpu;
-                } else {
-                    // Exponential Moving Average (EMA) to smooth out micro-spikes
-                    m_cpu_percent = std::clamp(static_cast<int>(std::round(0.70 * raw_cpu + 0.30 * m_cpu_percent)), 0, 100);
-                }
-
-                m_prev_total_jiffies = total_jiffies;
-                m_prev_work_jiffies = work_jiffies;
             }
         }
     }
+    fclose(file);
 }
 
 void SystemModule::update_ram() {
-    std::ifstream file("/proc/meminfo");
-    if (!file.is_open()) return;
+    FILE* file = fopen("/proc/meminfo", "r");
+    if (!file) return;
 
     unsigned long long mem_total_kb = 0;
     unsigned long long mem_avail_kb = 0;
     unsigned long long swap_total_kb = 0;
     unsigned long long swap_free_kb = 0;
-    std::string key;
-    unsigned long long val;
-    std::string unit;
 
-    while (file >> key >> val >> unit) {
-        if (key == "MemTotal:") mem_total_kb = val;
-        else if (key == "MemAvailable:") mem_avail_kb = val;
-        else if (key == "SwapTotal:") swap_total_kb = val;
-        else if (key == "SwapFree:") swap_free_kb = val;
+    char line[128];
+    while (fgets(line, sizeof(line), file)) {
+        if (strncmp(line, "MemTotal:", 9) == 0) sscanf(line + 9, "%llu", &mem_total_kb);
+        else if (strncmp(line, "MemAvailable:", 13) == 0) sscanf(line + 13, "%llu", &mem_avail_kb);
+        else if (strncmp(line, "SwapTotal:", 10) == 0) sscanf(line + 10, "%llu", &swap_total_kb);
+        else if (strncmp(line, "SwapFree:", 9) == 0) sscanf(line + 9, "%llu", &swap_free_kb);
+
         if (mem_total_kb > 0 && mem_avail_kb > 0 && swap_total_kb > 0 && swap_free_kb > 0) break;
     }
+    fclose(file);
 
     if (mem_total_kb > 0) {
         unsigned long long mem_used_kb = (mem_total_kb >= mem_avail_kb) ? (mem_total_kb - mem_avail_kb) : 0;
@@ -168,33 +162,25 @@ void SystemModule::update_ram() {
 void SystemModule::update_gpu() {
     int raw_percent = 0;
     if (!m_gpu_busy_path.empty()) {
-        // Multi-sample gpu_busy_percent over a short interval (3 samples, ~8ms total)
-        // to avoid catching momentary single-frame compositing spikes or idle vblank drops
-        int sum_samples = 0;
-        int valid_samples = 0;
-        for (int i = 0; i < 3; ++i) {
-            std::ifstream file(m_gpu_busy_path);
-            if (file.is_open()) {
-                int sample = 0;
-                if (file >> sample) {
-                    sum_samples += std::clamp(sample, 0, 100);
-                    valid_samples++;
-                }
+        FILE* f = fopen(m_gpu_busy_path.c_str(), "r");
+        if (f) {
+            int sample = 0;
+            if (fscanf(f, "%d", &sample) == 1) {
+                raw_percent = std::clamp(sample, 0, 100);
             }
-            if (i < 2) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(4));
-            }
-        }
-        if (valid_samples > 0) {
-            raw_percent = sum_samples / valid_samples;
+            fclose(f);
         }
     } else if (!m_intel_act_freq_path.empty() && !m_intel_max_freq_path.empty()) {
+        FILE* f_act = fopen(m_intel_act_freq_path.c_str(), "r");
+        FILE* f_max = fopen(m_intel_max_freq_path.c_str(), "r");
         int act = 0, max_f = 0;
-        std::ifstream f_act(m_intel_act_freq_path);
-        std::ifstream f_max(m_intel_max_freq_path);
-        if (f_act >> act && f_max >> max_f && max_f > 0) {
-            raw_percent = std::clamp(static_cast<int>(std::round((act * 100.0) / max_f)), 0, 100);
+        if (f_act && f_max) {
+            if (fscanf(f_act, "%d", &act) == 1 && fscanf(f_max, "%d", &max_f) == 1 && max_f > 0) {
+                raw_percent = std::clamp(static_cast<int>(std::round((act * 100.0) / max_f)), 0, 100);
+            }
         }
+        if (f_act) fclose(f_act);
+        if (f_max) fclose(f_max);
     }
 
     // Apply EMA smoothing to GPU reading
@@ -206,11 +192,13 @@ void SystemModule::update_gpu() {
 }
 
 void SystemModule::update_temp() {
-    std::ifstream file("/sys/class/thermal/thermal_zone0/temp");
-    if (file.is_open()) {
+    FILE* file = fopen("/sys/class/thermal/thermal_zone0/temp", "r");
+    if (file) {
         int millidegrees = 0;
-        file >> millidegrees;
-        m_cpu_temp = millidegrees / 1000;
+        if (fscanf(file, "%d", &millidegrees) == 1) {
+            m_cpu_temp = millidegrees / 1000;
+        }
+        fclose(file);
     }
 }
 
