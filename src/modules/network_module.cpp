@@ -34,6 +34,44 @@ void NetworkModule::query_local_ip() {
 }
 
 void NetworkModule::query_network() {
+    auto now = std::chrono::steady_clock::now();
+
+    // Fast-path: Check default route in /proc/net/route without spawning any processes
+    bool has_default_gateway = false;
+    FILE* fr = fopen("/proc/net/route", "r");
+    if (fr) {
+        char rline[128];
+        while (fgets(rline, sizeof(rline), fr)) {
+            char iface[32];
+            unsigned long dest = 1;
+            if (sscanf(rline, "%31s %lx", iface, &dest) == 2) {
+                if (dest == 0 && strcmp(iface, "lo") != 0) {
+                    has_default_gateway = true;
+                    m_interface = iface;
+                    break;
+                }
+            }
+        }
+        fclose(fr);
+    }
+
+    if (!has_default_gateway) {
+        m_connected = false;
+        m_is_wifi = false;
+        m_ssid.clear();
+        m_had_gateway = false;
+        return;
+    }
+
+    // If already connected and gateway status hasn't changed, query nmcli only every 30s
+    if (m_connected && m_had_gateway && !m_ssid.empty() &&
+        std::chrono::duration_cast<std::chrono::seconds>(now - m_last_nmcli_query).count() < 30) {
+        return;
+    }
+
+    m_had_gateway = true;
+    m_last_nmcli_query = now;
+
     FILE* fp = popen("nmcli -t -f TYPE,STATE,CONNECTION device 2>/dev/null", "r");
     if (!fp) return;
 

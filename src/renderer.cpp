@@ -1,4 +1,5 @@
 #include "renderer.hpp"
+#include "modules/clock_module.hpp"
 #include <cmath>
 #include <algorithm>
 #include <iostream>
@@ -234,6 +235,14 @@ void Renderer::render_island(
             case IslandMode::Expanded_QuickActions:
                 if (modules.size() > 10 && modules[10]) { // QuickActionModule
                     modules[10]->draw_expanded(cr, m_font_desc, config, width, height, hitboxes);
+                }
+                break;
+            case IslandMode::Expanded_Alarm:
+                if (modules.size() > 0 && modules[0]) { // ClockModule
+                    auto clock_mod = std::dynamic_pointer_cast<ClockModule>(modules[0]);
+                    if (clock_mod) {
+                        clock_mod->draw_alarm_expanded(cr, m_font_desc, config, width, height, hitboxes);
+                    }
                 }
                 break;
             default:

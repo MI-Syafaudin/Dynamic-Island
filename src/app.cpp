@@ -1,5 +1,8 @@
 #include "app.hpp"
 #include <sys/poll.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+#include <csignal>
 #include <unistd.h>
 #include <iostream>
 #include <cmath>
@@ -12,6 +15,51 @@ App::App() {}
 
 App::~App() {
     stop();
+}
+
+void App::play_alarm_sound() {
+    stop_alarm_sound();
+    pid_t pid = fork();
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        execlp("pw-play", "pw-play", "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga", (char*)nullptr);
+        execlp("paplay", "paplay", "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga", (char*)nullptr);
+        execlp("canberra-gtk-play", "canberra-gtk-play", "-i", "alarm-clock-elapsed", (char*)nullptr);
+        _exit(1);
+    } else if (pid > 0) {
+        m_sound_pid = pid;
+    }
+}
+
+void App::stop_alarm_sound() {
+    if (m_sound_pid > 0) {
+        kill(m_sound_pid, SIGTERM);
+        waitpid(m_sound_pid, nullptr, WNOHANG);
+        m_sound_pid = -1;
+    }
+}
+
+void App::dismiss_alarm() {
+    stop_alarm_sound();
+    if (m_clock_mod) {
+        m_clock_mod->dismiss_alarm();
+    }
+    m_idle_width_dirty = true;
+    collapse();
+}
+
+void App::snooze_alarm(int minutes) {
+    stop_alarm_sound();
+    if (m_clock_mod) {
+        m_clock_mod->snooze_alarm(minutes);
+    }
+    m_idle_width_dirty = true;
+    collapse();
 }
 
 bool App::init(const std::string& config_path) {
@@ -139,6 +187,7 @@ void App::setup_callbacks() {
     m_hyprland_ipc.set_workspace_callback([this](int ws) {
         if (m_ws_mod) {
             m_ws_mod->set_active_workspace(ws);
+            m_idle_width_dirty = true;
             update_idle_dimensions(true);
         }
     });
@@ -146,6 +195,7 @@ void App::setup_callbacks() {
     m_hyprland_ipc.set_window_callback([this](const std::string& cls, const std::string& title) {
         if (m_win_mod) {
             m_win_mod->set_active_window(cls, title);
+            m_idle_width_dirty = true;
             update_idle_dimensions(true);
         }
     });
@@ -167,11 +217,16 @@ double App::calculate_idle_width() {
     if (!m_config.adaptive_width) {
         return m_config.idle_width;
     }
+    if (!m_idle_width_dirty) {
+        return m_cached_idle_width;
+    }
     int content_w = m_renderer.calculate_compact_width(m_config, m_modules);
     double target = std::max(static_cast<double>(m_config.idle_width), static_cast<double>(content_w));
     if (m_config.max_idle_width > 0) {
         target = std::min(target, static_cast<double>(m_config.max_idle_width));
     }
+    m_cached_idle_width = target;
+    m_idle_width_dirty = false;
     return target;
 }
 
@@ -196,8 +251,6 @@ void App::update_idle_dimensions(bool animate) {
             m_wayland.resize(static_cast<int>(m_curr_w), static_cast<int>(m_curr_h));
             render_current_state();
         }
-    } else {
-        render_current_state();
     }
 }
 
@@ -221,8 +274,12 @@ void App::get_target_dimensions(IslandMode mode, double& w, double& h) {
             h = 136.0;
             break;
         case IslandMode::Expanded_Clock:
-            w = 320.0;
-            h = 100.0;
+            w = 340.0;
+            h = 142.0;
+            break;
+        case IslandMode::Expanded_Alarm:
+            w = 360.0;
+            h = 96.0;
             break;
         case IslandMode::Expanded_Network:
             w = 310.0;
@@ -450,8 +507,35 @@ void App::on_mouse_button(double x, double y, uint32_t button, bool pressed) {
                     render_current_state();
                     return;
                 }
+                if (hb.action == "alarm_dismiss") {
+                    dismiss_alarm();
+                    return;
+                }
+                if (hb.action == "alarm_snooze") {
+                    snooze_alarm(5);
+                    return;
+                }
+                if (hb.action == "alarm_cancel") {
+                    if (m_clock_mod) {
+                        int id = std::atoi(hb.param.c_str());
+                        m_clock_mod->cancel_alarm(id);
+                    }
+                    m_idle_width_dirty = true;
+                    render_current_state();
+                    return;
+                }
+                if (hb.action == "quick_timer") {
+                    if (m_clock_mod) {
+                        int mins = std::atoi(hb.param.c_str());
+                        m_clock_mod->add_timer(mins * 60, "Timer " + hb.param + "m");
+                    }
+                    m_idle_width_dirty = true;
+                    render_current_state();
+                    return;
+                }
                 if (hb.action == "toggle_expand") {
                     if (hb.param == "clock") toggle_mode(IslandMode::Expanded_Clock);
+                    else if (hb.param == "alarm") toggle_mode(IslandMode::Expanded_Alarm);
                     else if (hb.param == "media") toggle_mode(IslandMode::Expanded_Media);
                     else if (hb.param == "system") toggle_mode(IslandMode::Expanded_System);
                     else if (hb.param == "network") toggle_mode(IslandMode::Expanded_Network);
@@ -478,7 +562,9 @@ void App::on_mouse_button(double x, double y, uint32_t button, bool pressed) {
         }
 
         // If clicked on island body but no specific button, toggle clock/idle
-        if (m_mode != IslandMode::Idle) {
+        if (m_mode == IslandMode::Expanded_Alarm) {
+            dismiss_alarm();
+        } else if (m_mode != IslandMode::Idle) {
             collapse();
         }
     }
@@ -508,6 +594,7 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
             else if (target == "media") toggle_mode(IslandMode::Expanded_Media);
             else if (target == "system") toggle_mode(IslandMode::Expanded_System);
             else if (target == "clock") toggle_mode(IslandMode::Expanded_Clock);
+            else if (target == "alarm") toggle_mode(IslandMode::Expanded_Alarm);
             else if (target == "network") toggle_mode(IslandMode::Expanded_Network);
             else if (target == "quick") toggle_mode(IslandMode::Expanded_QuickActions);
             return "OK";
@@ -558,6 +645,12 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
                     collapse();
                 } else {
                     expand_to(IslandMode::Expanded_Clock, 0);
+                }
+            } else if (target == "alarm") {
+                if (m_mode == IslandMode::Expanded_Alarm) {
+                    collapse();
+                } else {
+                    expand_to(IslandMode::Expanded_Alarm, 0);
                 }
             } else if (target == "network") {
                 if (m_mode == IslandMode::Expanded_Network) {
@@ -634,6 +727,100 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
         }
         notify(app_name, msg);
         return "OK";
+    }
+    if (cmd == "alarm") {
+        if (args.empty() || args[0] == "list") {
+            if (m_clock_mod) {
+                return m_clock_mod->get_alarms_list_str();
+            }
+            return "Clock module not available\n";
+        }
+        std::string sub = args[0];
+        if (sub == "set") {
+            if (args.size() < 2) return "Usage: alarm set <HH:MM> [label]\n";
+            std::string time_str = args[1];
+            size_t colon = time_str.find(':');
+            if (colon == std::string::npos) return "Invalid time format. Use HH:MM\n";
+            int h = std::atoi(time_str.substr(0, colon).c_str());
+            int m = std::atoi(time_str.substr(colon + 1).c_str());
+            if (h < 0 || h > 23 || m < 0 || m > 59) return "Invalid time: " + time_str + "\n";
+            std::string label;
+            for (size_t i = 2; i < args.size(); ++i) {
+                if (i > 2) label += " ";
+                label += args[i];
+            }
+            if (m_clock_mod) {
+                int id = m_clock_mod->add_alarm(h, m, label);
+                m_idle_width_dirty = true;
+                if (m_mode == IslandMode::Idle) render_current_state();
+                return "Alarm set for " + time_str + " (\"" + (label.empty() ? "Alarm" : label) + "\") [ID: " + std::to_string(id) + "]\n";
+            }
+            return "Clock module not available\n";
+        }
+        if (sub == "in" || sub == "timer") {
+            if (args.size() < 2) return "Usage: alarm in <duration[s|m]> [label]\n";
+            std::string dur_str = args[1];
+            int total_secs = 0;
+            if (!dur_str.empty() && (dur_str.back() == 's' || dur_str.back() == 'S')) {
+                total_secs = std::atoi(dur_str.substr(0, dur_str.size() - 1).c_str());
+            } else if (!dur_str.empty() && (dur_str.back() == 'm' || dur_str.back() == 'M')) {
+                total_secs = std::atoi(dur_str.substr(0, dur_str.size() - 1).c_str()) * 60;
+            } else {
+                total_secs = std::atoi(dur_str.c_str()) * 60;
+            }
+            if (total_secs <= 0) return "Duration must be > 0\n";
+            std::string label;
+            for (size_t i = 2; i < args.size(); ++i) {
+                if (i > 2) label += " ";
+                label += args[i];
+            }
+            if (m_clock_mod) {
+                int id = m_clock_mod->add_timer(total_secs, label);
+                m_idle_width_dirty = true;
+                if (m_mode == IslandMode::Idle) render_current_state();
+                std::string dur_display = (total_secs >= 60 && total_secs % 60 == 0)
+                    ? (std::to_string(total_secs / 60) + " minute(s)")
+                    : (std::to_string(total_secs) + " second(s)");
+                return "Timer set for " + dur_display + " [ID: " + std::to_string(id) + "]\n";
+            }
+            return "Clock module not available\n";
+        }
+        if (sub == "cancel") {
+            if (args.size() < 2 || args[1] == "all") {
+                if (m_clock_mod) m_clock_mod->cancel_alarm(-1);
+                m_idle_width_dirty = true;
+                if (m_mode == IslandMode::Idle) render_current_state();
+                return "All alarms canceled\n";
+            }
+            int id = std::atoi(args[1].c_str());
+            if (m_clock_mod && m_clock_mod->cancel_alarm(id)) {
+                m_idle_width_dirty = true;
+                if (m_mode == IslandMode::Idle) render_current_state();
+                return "Alarm " + std::to_string(id) + " canceled\n";
+            }
+            return "Alarm ID not found\n";
+        }
+        if (sub == "dismiss" || sub == "stop") {
+            dismiss_alarm();
+            return "Alarm dismissed\n";
+        }
+        if (sub == "snooze") {
+            int mins = (args.size() > 1) ? std::atoi(args[1].c_str()) : 5;
+            snooze_alarm(mins);
+            return "Alarm snoozed for " + std::to_string(mins) + " minutes\n";
+        }
+        return "Unknown alarm subcommand: " + sub + "\n";
+    }
+    if (cmd == "timer") {
+        if (args.empty()) {
+            std::vector<std::string> l_args = {"list"};
+            return handle_ipc_command("alarm", l_args);
+        }
+        std::vector<std::string> in_args = {"in", args[0]};
+        for (size_t i = 1; i < args.size(); ++i) {
+            in_args.push_back(args[i]);
+        }
+        return handle_ipc_command("alarm", in_args);
     }
     if (cmd == "ping") {
         return "pong";
@@ -750,56 +937,116 @@ void App::run() {
             collapse();
         }
 
-        // Periodic Clock update (every 1s)
+        // Periodic Clock update & Alarm check (every 1s)
         if (std::chrono::duration_cast<std::chrono::seconds>(now - m_last_clock_update).count() >= 1) {
             m_last_clock_update = now;
+            bool clock_dirty = false;
+            static std::string last_idle_time;
+
             if (m_clock_mod) {
                 m_clock_mod->update();
-            }
-            if (m_mode == IslandMode::Expanded_Clock) {
-                render_current_state();
-            } else if (m_mode == IslandMode::Idle) {
-                static std::string last_idle_time;
-                if (m_clock_mod && m_clock_mod->get_time_str() != last_idle_time) {
-                    last_idle_time = m_clock_mod->get_time_str();
+
+                // Check alarms
+                AlarmItem triggered;
+                if (m_clock_mod->check_alarms(triggered)) {
+                    expand_to(IslandMode::Expanded_Alarm, 0);
+                    play_alarm_sound();
+                    m_last_alarm_sound = now;
+                }
+
+                if (m_mode == IslandMode::Expanded_Alarm) {
+                    // Periodic alarm sound repeating every 3.5s while ringing
+                    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - m_last_alarm_sound).count() >= 3500) {
+                        play_alarm_sound();
+                        m_last_alarm_sound = now;
+                    }
                     render_current_state();
                 }
+
+                if (m_clock_mod->get_time_str() != last_idle_time ||
+                    m_clock_mod->has_active_timer() ||
+                    m_clock_mod->is_any_alarm_ringing()) {
+                    last_idle_time = m_clock_mod->get_time_str();
+                    clock_dirty = true;
+                }
+            }
+
+            if (m_mode == IslandMode::Expanded_Clock) {
+                render_current_state();
+            } else if (m_mode == IslandMode::Idle && clock_dirty) {
+                m_idle_width_dirty = true;
+                render_current_state();
             }
         }
 
         // Periodic System Monitor update (both Idle compact and Expanded_System)
         if (m_sys_mod && std::chrono::duration_cast<std::chrono::milliseconds>(now - m_last_system_update).count() >= 1500) {
             m_last_system_update = now;
+            int old_cpu = m_sys_mod->get_cpu_percent();
             m_sys_mod->update();
+            int new_cpu = m_sys_mod->get_cpu_percent();
+
             if (m_mode == IslandMode::Expanded_System) {
                 render_current_state();
-            } else if (m_mode == IslandMode::Idle) {
+            } else if (m_mode == IslandMode::Idle && old_cpu != new_cpu) {
                 render_current_state();
             }
         }
 
-        // Periodic Media status update (every 2s)
-        if (std::chrono::duration_cast<std::chrono::seconds>(now - m_last_media_update).count() >= 2) {
+        // Periodic Media status update (2s when playing, 4s when idle/stopped)
+        int media_interval_sec = (m_media_mod && m_media_mod->is_playing()) ? 2 : 4;
+        if (std::chrono::duration_cast<std::chrono::seconds>(now - m_last_media_update).count() >= media_interval_sec) {
             m_last_media_update = now;
             if (m_media_mod) {
+                std::string old_title = m_media_mod->get_title();
+                std::string old_status = m_media_mod->get_status();
                 m_media_mod->update();
-            }
-            if (m_mode == IslandMode::Expanded_Media) {
-                render_current_state();
-            } else if (m_mode == IslandMode::Idle) {
-                update_idle_dimensions(true);
+                bool changed = (old_title != m_media_mod->get_title() || old_status != m_media_mod->get_status());
+
+                if (m_mode == IslandMode::Expanded_Media) {
+                    render_current_state();
+                } else if (m_mode == IslandMode::Idle && changed) {
+                    m_idle_width_dirty = true;
+                    update_idle_dimensions(true);
+                }
             }
         }
 
         // Periodic Slow update: Battery, Network, Audio, Quick Controls (every 5s)
         if (std::chrono::duration_cast<std::chrono::seconds>(now - m_last_slow_update).count() >= 5) {
             m_last_slow_update = now;
-            if (m_bat_mod) m_bat_mod->update();
-            if (m_net_mod) m_net_mod->update();
-            if (m_audio_mod) m_audio_mod->update();
+            bool slow_changed = false;
+
+            if (m_bat_mod) {
+                int old_pct = m_bat_mod->get_percentage();
+                bool old_chg = m_bat_mod->is_charging();
+                m_bat_mod->update();
+                if (old_pct != m_bat_mod->get_percentage() || old_chg != m_bat_mod->is_charging()) {
+                    slow_changed = true;
+                }
+            }
+            if (m_net_mod) {
+                bool old_conn = m_net_mod->is_connected();
+                std::string old_ssid = m_net_mod->get_ssid();
+                m_net_mod->update();
+                if (old_conn != m_net_mod->is_connected() || old_ssid != m_net_mod->get_ssid()) {
+                    slow_changed = true;
+                }
+            }
+            if (m_audio_mod) {
+                int old_vol = m_audio_mod->get_volume();
+                bool old_mute = m_audio_mod->is_muted();
+                m_audio_mod->update();
+                if (old_vol != m_audio_mod->get_volume() || old_mute != m_audio_mod->is_muted()) {
+                    slow_changed = true;
+                }
+            }
+
             if (m_quick_mod && m_mode == IslandMode::Expanded_QuickActions) m_quick_mod->update();
             if (m_mode == IslandMode::Expanded_Brightness) query_brightness();
-            if (m_mode == IslandMode::Idle) {
+
+            if (m_mode == IslandMode::Idle && slow_changed) {
+                m_idle_width_dirty = true;
                 update_idle_dimensions(true);
             } else if (m_mode == IslandMode::Expanded_QuickActions || m_mode == IslandMode::Expanded_Audio || m_mode == IslandMode::Expanded_Brightness) {
                 render_current_state();
@@ -810,6 +1057,7 @@ void App::run() {
 
 void App::stop() {
     m_running = false;
+    stop_alarm_sound();
     m_ipc_server.stop();
     m_hyprland_ipc.disconnect();
     m_wayland.cleanup();

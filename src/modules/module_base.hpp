@@ -27,7 +27,8 @@ enum class IslandMode {
     Expanded_Network,
     Expanded_Notification,
     Expanded_Screenshot,
-    Expanded_QuickActions
+    Expanded_QuickActions,
+    Expanded_Alarm
 };
 
 class ModuleBase {

@@ -14,6 +14,9 @@ public:
 
     bool is_playing() const { return m_status == "Playing"; }
     bool has_media() const { return !m_title.empty(); }
+    const std::string& get_status() const { return m_status; }
+    const std::string& get_title() const { return m_title; }
+    const std::string& get_artist() const { return m_artist; }
 
     void play_pause();
     void next_track();

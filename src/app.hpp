@@ -39,6 +39,11 @@ public:
     void notify(const std::string& app_name, const std::string& message);
     void capture_screenshot(bool area_select);
 
+    void play_alarm_sound();
+    void stop_alarm_sound();
+    void dismiss_alarm();
+    void snooze_alarm(int minutes = 5);
+
 private:
     bool m_running = false;
     Config m_config;
@@ -82,9 +87,17 @@ private:
     std::chrono::steady_clock::time_point m_last_system_update;
     std::chrono::steady_clock::time_point m_last_media_update;
     std::chrono::steady_clock::time_point m_last_slow_update;
+    std::chrono::steady_clock::time_point m_last_alarm_sound;
 
     int m_brightness_val = 65;
     bool m_is_fullscreen = false;
+
+    // Audio alarm process
+    pid_t m_sound_pid = -1;
+
+    // Width caching optimization
+    bool m_idle_width_dirty = true;
+    double m_cached_idle_width = 260.0;
 
     void setup_callbacks();
     void handle_frame();

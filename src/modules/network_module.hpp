@@ -1,6 +1,7 @@
 #pragma once
 
 #include "module_base.hpp"
+#include <chrono>
 
 namespace di {
 
@@ -21,6 +22,8 @@ private:
     std::string m_ssid;
     std::string m_interface;
     std::string m_ip;
+    std::chrono::steady_clock::time_point m_last_nmcli_query;
+    bool m_had_gateway = false;
 
     void query_network();
     void query_local_ip();

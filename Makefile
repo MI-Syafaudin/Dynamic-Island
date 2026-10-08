@@ -1,7 +1,7 @@
 CXX ?= g++
 CC ?= gcc
-CXXFLAGS ?= -std=c++20 -O2 -Wall -Wextra -pthread
-CFLAGS ?= -O2 -Wall
+CXXFLAGS ?= -std=c++20 -O3 -flto -Wall -Wextra -pthread
+CFLAGS ?= -O3 -flto -Wall
 
 PKG_DEPS = wayland-client cairo pango pangocairo
 PKG_CFLAGS = $(shell pkg-config --cflags $(PKG_DEPS))

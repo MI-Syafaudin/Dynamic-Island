@@ -32,8 +32,14 @@ case "$cmd" in
     notify)
         $BIN notify "${1:-Antigravity}" "${2:-Notification test message}"
         ;;
+    alarm)
+        $BIN alarm "$@"
+        ;;
+    timer)
+        $BIN timer "$@"
+        ;;
     *)
-        echo "Usage: $0 {toggle|collapse|expand <mode>|volume <val>|brightness <val>|media <act>|screenshot <mode>|notify <app> <msg>|reload|quit}"
+        echo "Usage: $0 {toggle|collapse|expand <mode>|volume <val>|brightness <val>|media <act>|screenshot <mode>|notify <app> <msg>|alarm <args>|timer <args>|reload|quit}"
         exit 1
         ;;
 esac

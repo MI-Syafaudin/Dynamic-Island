@@ -50,6 +50,7 @@ Proyek ini dibangun dari awal dengan fokus utama pada **efisiensi ekstrem**, **k
 | **10. Screenshot Tool** | Terintegrasi dengan `grim` + `slurp` + `wl-copy`. | Simpan otomatis ke `~/Pictures/Screenshots/`, salin ke clipboard, dan memunculkan banner "📸 Screenshot Captured!". |
 | **11. Notifications** | Banner notifikasi mandiri tanpa daemon berat. | Menerima notifikasi via `dynamic-island notify "App" "Message"` dan otomatis collapse setelah 4.5 detik. |
 | **12. Quick Controls** | **Panel Kontrol Cepat Modern dengan Indikator Aktif**: Header *"Quick Controls"* di posisi tengah (*centered*). Dilengkapi **indikator status aktif** berbasis sistem riil untuk WiFi, Bluetooth, Mute, dan Night Light. Kontrol **Night Light** kini terintegrasi baik dengan `hyprsunset`/`wlsunset`/`gammastep` maupun shader native Hyprland (`nightmode.frag`). Tombol **Power / Shutdown** kini menyajikan dialog/menu daya interaktif (`wlogout`/`rofi`/`wofi`/`systemctl`) sehingga dapat mematikan (*shutdown*), restart, maupun sleep dengan aman. | Tombol yang aktif memiliki latar warna aksen dinamis (`accent_blue`, `danger`, `warning`), batas sorotan (*highlight border*), titik indikator (*active dot*), dan ikon/label berganti dinamis (misal `󰖩`/`󰖪`, `󰂯`/`󰂲`, `󰖁 Muted`/`󰕾 Mute`). Respon klik instan tanpa delay. |
+| **13. Alarm & Timer** | **Alarm Jam Dinding & Timer Fleksibel**: Pengingat alarm (`HH:MM`) dan countdown timer presisi tinggi dengan **0 overhead RAM tambahan (<1 KB)**. Dilengkapi persistensi otomatis ke `~/.config/dynamic-island/alarms.json`, visual alarm berdering (`Expanded_Alarm`) dengan animasi pill, audio nada dering terintegrasi PipeWire (`pw-play` / `paplay` / `canberra`), serta tombol interaktif `[󰅖 Matikan]` dan `[󰒲 Tunda 5m]`. | Pada ekspansi jam, tersedia status alarm dan tombol *quick timer* sekali klik `[+1m] [+5m] [+10m] [+15m] [+30m]`, serta tombol `[󰅖 Batal]`. Pada mode berdering, klik bodi atau tombol untuk matikan/snooze instan. |
 
 ---
 
@@ -246,6 +247,24 @@ dynamic-island screenshot area
 
 # Mengirim pesan notifikasi ke island
 dynamic-island notify "Kitty" "Build berhasil diselesaikan!"
+
+# Mengatur alarm pada jam tertentu (HH:MM)
+dynamic-island alarm set 07:00 "Bangun Pagi"
+
+# Mengatur countdown timer (menit atau detik: 15, 30s, 5m)
+dynamic-island timer 15 "Rebus Telur"
+dynamic-island alarm in 30s "Seduh Teh"
+
+# Melihat daftar alarm dan timer aktif serta sisa waktunya
+dynamic-island alarm list
+
+# Membatalkan alarm berdasarkan ID atau membatalkan semua
+dynamic-island alarm cancel 1
+dynamic-island alarm cancel all
+
+# Mematikan (dismiss) atau menunda (snooze) alarm yang sedang berdering
+dynamic-island alarm dismiss
+dynamic-island alarm snooze 5
 
 # Reload konfigurasi saat runtime
 dynamic-island reload
