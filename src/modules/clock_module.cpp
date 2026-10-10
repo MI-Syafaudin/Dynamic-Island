@@ -12,7 +12,13 @@ namespace di {
 
 ClockModule::ClockModule() {
     load_alarms();
-    update();
+    std::time_t t = std::time(nullptr);
+    std::tm* tm_now = std::localtime(&t);
+    if (tm_now) {
+        m_set_hour = (tm_now->tm_hour + 1) % 24;
+        m_set_minute = 0;
+    }
+    update(true);
 }
 
 std::string ClockModule::get_alarms_file_path() const {
@@ -328,7 +334,7 @@ void ClockModule::update_uptime() {
     }
 }
 
-void ClockModule::update() {
+void ClockModule::update(bool expanded) {
     std::time_t t = std::time(nullptr);
     std::tm* tm_now = std::localtime(&t);
     if (!tm_now) return;
@@ -337,13 +343,22 @@ void ClockModule::update() {
     std::strftime(buf, sizeof(buf), "%H:%M", tm_now);
     m_time_str = buf;
 
-    std::strftime(buf, sizeof(buf), "%H:%M:%S", tm_now);
-    m_full_time_str = buf;
+    if (expanded) {
+        std::strftime(buf, sizeof(buf), "%H:%M:%S", tm_now);
+        m_full_time_str = buf;
 
-    std::strftime(buf, sizeof(buf), "%A, %d %B %Y", tm_now);
-    m_date_str = buf;
+        std::strftime(buf, sizeof(buf), "%A, %d %B %Y", tm_now);
+        m_date_str = buf;
 
-    update_uptime();
+        update_uptime();
+    } else if (tm_now->tm_min != m_last_minute) {
+        m_last_minute = tm_now->tm_min;
+        std::strftime(buf, sizeof(buf), "%H:%M:%S", tm_now);
+        m_full_time_str = buf;
+
+        std::strftime(buf, sizeof(buf), "%A, %d %B %Y", tm_now);
+        m_date_str = buf;
+    }
 }
 
 void ClockModule::draw_compact(cairo_t* cr, PangoFontDescription* font_desc, const Config& config, int& current_x, int y, int h, std::vector<HitBox>& hitboxes) {
@@ -388,6 +403,33 @@ void ClockModule::draw_compact(cairo_t* cr, PangoFontDescription* font_desc, con
     g_object_unref(layout);
 }
 
+void ClockModule::adjust_hour(int delta) {
+    m_set_hour = (m_set_hour + delta) % 24;
+    if (m_set_hour < 0) m_set_hour += 24;
+}
+
+void ClockModule::adjust_minute(int delta) {
+    m_set_minute = (m_set_minute + delta) % 60;
+    if (m_set_minute < 0) m_set_minute += 60;
+}
+
+void ClockModule::set_selected_time(int hour, int minute) {
+    m_set_hour = std::clamp(hour, 0, 23);
+    m_set_minute = std::clamp(minute, 0, 59);
+}
+
+void ClockModule::handle_scroll(double x, double y, double delta) {
+    (void)y;
+    int dir = (delta > 0) ? -1 : 1;
+    if (m_hour_box_w > 0 && x >= m_hour_box_x - 10 && x <= m_hour_box_x + m_hour_box_w + 10) {
+        adjust_hour(dir);
+    } else if (m_min_box_w > 0 && x >= m_min_box_x - 10 && x <= m_min_box_x + m_min_box_w + 10) {
+        adjust_minute(dir);
+    } else {
+        adjust_minute(dir * 5);
+    }
+}
+
 void ClockModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, const Config& config, int w, int h, std::vector<HitBox>& hitboxes) {
     PangoLayout* layout = pango_cairo_create_layout(cr);
 
@@ -401,33 +443,44 @@ void ClockModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, co
     int tw, th;
     pango_layout_get_pixel_size(layout, &tw, &th);
     cairo_set_source_rgba(cr, config.colors.text.r, config.colors.text.g, config.colors.text.b, 1.0);
-    cairo_move_to(cr, (w - tw) / 2, 10);
+    cairo_move_to(cr, (w - tw) / 2, 8);
     pango_cairo_show_layout(cr, layout);
     pango_font_description_free(large_desc);
 
-    // 2. Full Date
+    // 2. Full Date (Centered, clearly visible, protected against truncation)
     pango_layout_set_font_description(layout, font_desc);
-    pango_layout_set_text(layout, m_date_str.c_str(), -1);
-    pango_layout_get_pixel_size(layout, &tw, &th);
-    cairo_set_source_rgba(cr, config.colors.accent.r, config.colors.accent.g, config.colors.accent.b, 1.0);
-    cairo_move_to(cr, (w - tw) / 2, 38);
+    std::string date_display = "󰸗 " + m_date_str;
+    pango_layout_set_text(layout, date_display.c_str(), -1);
+    pango_layout_set_width(layout, (w - 40) * PANGO_SCALE);
+    pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
+    pango_layout_set_alignment(layout, PANGO_ALIGN_CENTER);
+    cairo_set_source_rgba(cr, config.colors.subtext.r, config.colors.subtext.g, config.colors.subtext.b, 0.95);
+    cairo_move_to(cr, 20, 34);
     pango_cairo_show_layout(cr, layout);
 
-    // 3. Uptime
-    pango_layout_set_text(layout, m_uptime_str.c_str(), -1);
-    pango_layout_get_pixel_size(layout, &tw, &th);
-    cairo_set_source_rgba(cr, config.colors.subtext.r, config.colors.subtext.g, config.colors.subtext.b, 0.8);
-    cairo_move_to(cr, (w - tw) / 2, 56);
+    // 3. System Uptime (Subtle line below date)
+    std::string uptime_display = "󰔟 " + m_uptime_str;
+    pango_layout_set_text(layout, uptime_display.c_str(), -1);
+    pango_layout_set_width(layout, (w - 40) * PANGO_SCALE);
+    pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
+    pango_layout_set_alignment(layout, PANGO_ALIGN_CENTER);
+    cairo_set_source_rgba(cr, config.colors.subtext.r, config.colors.subtext.g, config.colors.subtext.b, 0.70);
+    cairo_move_to(cr, 20, 50);
     pango_cairo_show_layout(cr, layout);
+
+    // Reset layout alignment and width for subsequent custom components
+    pango_layout_set_width(layout, -1);
+    pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_NONE);
+    pango_layout_set_alignment(layout, PANGO_ALIGN_LEFT);
 
     // 4. Subtle separator line
-    cairo_set_source_rgba(cr, config.colors.border.r, config.colors.border.g, config.colors.border.b, 0.6);
+    cairo_set_source_rgba(cr, config.colors.border.r, config.colors.border.g, config.colors.border.b, 0.40);
     cairo_set_line_width(cr, 1.0);
-    cairo_move_to(cr, 20, 76);
-    cairo_line_to(cr, w - 20, 76);
+    cairo_move_to(cr, 22, 68);
+    cairo_line_to(cr, w - 22, 68);
     cairo_stroke(cr);
 
-    // 5. Alarm Status
+    // 5. Alarm / Timer Status
     const AlarmItem* next_a = get_next_alarm();
     std::string alarm_text;
     if (next_a) {
@@ -449,26 +502,18 @@ void ClockModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, co
         alarm_text = "󰂞 Tidak ada alarm aktif";
     }
 
-    pango_layout_set_text(layout, alarm_text.c_str(), -1);
-    pango_layout_get_pixel_size(layout, &tw, &th);
-
     if (next_a) {
-        cairo_set_source_rgba(cr, config.colors.warning.r, config.colors.warning.g, config.colors.warning.b, 1.0);
-        cairo_move_to(cr, 20, 84);
-        pango_cairo_show_layout(cr, layout);
-
-        // Draw "Batal" badge button on right
+        // "Batal" badge button on right
         std::string cancel_txt = "󰅖 Batal";
         pango_layout_set_text(layout, cancel_txt.c_str(), -1);
         int cw, ch;
         pango_layout_get_pixel_size(layout, &cw, &ch);
 
-        int bx = w - 20 - cw - 12;
-        int by = 82;
+        int bx = w - 24 - cw - 12;
+        int by = 73;
         int bw = cw + 12;
         int bh = 20;
 
-        // Button background
         cairo_new_sub_path(cr);
         double br = 4.0;
         cairo_arc(cr, bx + br, by + br, br, M_PI, 3 * M_PI / 2);
@@ -487,39 +532,53 @@ void ClockModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, co
         pango_cairo_show_layout(cr, layout);
 
         hitboxes.push_back({bx, by, bw, bh, "alarm_cancel", std::to_string(next_a->id)});
+
+        // Active alarm text on left (bounded so it never overlaps the cancel button)
+        pango_layout_set_text(layout, alarm_text.c_str(), -1);
+        int max_al_w = bx - 24 - 10;
+        if (max_al_w > 50) {
+            pango_layout_set_width(layout, max_al_w * PANGO_SCALE);
+            pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
+        }
+        cairo_set_source_rgba(cr, config.colors.warning.r, config.colors.warning.g, config.colors.warning.b, 1.0);
+        cairo_move_to(cr, 24, 75);
+        pango_cairo_show_layout(cr, layout);
+        pango_layout_set_width(layout, -1);
+        pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_NONE);
     } else {
-        cairo_set_source_rgba(cr, config.colors.subtext.r, config.colors.subtext.g, config.colors.subtext.b, 0.8);
-        cairo_move_to(cr, (w - tw) / 2, 84);
+        pango_layout_set_text(layout, alarm_text.c_str(), -1);
+        pango_layout_get_pixel_size(layout, &tw, &th);
+        cairo_set_source_rgba(cr, config.colors.subtext.r, config.colors.subtext.g, config.colors.subtext.b, 0.75);
+        cairo_move_to(cr, (w - tw) / 2, 75);
         pango_cairo_show_layout(cr, layout);
     }
 
-    // 6. Quick Timer Preset Buttons: [+1m] [+5m] [+10m] [+15m] [+30m]
+    // 6. Presets Row (Templates preserved & enhanced)
     const std::vector<std::pair<std::string, std::string>> presets = {
-        {"+1m", "1"}, {"+5m", "5"}, {"+10m", "10"}, {"+15m", "15"}, {"+30m", "30"}
+        {"+1m", "1"}, {"+5m", "5"}, {"+10m", "10"}, {"+15m", "15"}, {"+30m", "30"}, {"+1h", "60"}
     };
 
     int btn_w = 48;
-    int btn_h = 24;
-    int btn_spacing = 8;
+    int btn_h = 22;
+    int btn_spacing = 6;
     int total_btns_w = static_cast<int>(presets.size()) * btn_w + (static_cast<int>(presets.size()) - 1) * btn_spacing;
     int start_btn_x = (w - total_btns_w) / 2;
-    int btn_y = 108;
+    int btn_y = 98;
 
     for (size_t i = 0; i < presets.size(); ++i) {
         int cur_bx = start_btn_x + static_cast<int>(i) * (btn_w + btn_spacing);
 
-        // Rounded button rect
         cairo_new_sub_path(cr);
-        double r = 5.0;
+        double r = 4.0;
         cairo_arc(cr, cur_bx + r, btn_y + r, r, M_PI, 3 * M_PI / 2);
         cairo_arc(cr, cur_bx + btn_w - r, btn_y + r, r, -M_PI / 2, 0);
         cairo_arc(cr, cur_bx + btn_w - r, btn_y + btn_h - r, r, 0, M_PI / 2);
         cairo_arc(cr, cur_bx + r, btn_y + btn_h - r, r, M_PI / 2, M_PI);
         cairo_close_path(cr);
 
-        cairo_set_source_rgba(cr, config.colors.card_bg.r, config.colors.card_bg.g, config.colors.card_bg.b, 0.9);
+        cairo_set_source_rgba(cr, config.colors.card_bg.r, config.colors.card_bg.g, config.colors.card_bg.b, 0.85);
         cairo_fill_preserve(cr);
-        cairo_set_source_rgba(cr, config.colors.border.r, config.colors.border.g, config.colors.border.b, 0.7);
+        cairo_set_source_rgba(cr, config.colors.border.r, config.colors.border.g, config.colors.border.b, 0.6);
         cairo_set_line_width(cr, 1.0);
         cairo_stroke(cr);
 
@@ -533,6 +592,165 @@ void ClockModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, co
 
         hitboxes.push_back({cur_bx, btn_y, btn_w, btn_h, "quick_timer", presets[i].second});
     }
+
+    // 7. Subtle divider
+    cairo_set_source_rgba(cr, config.colors.border.r, config.colors.border.g, config.colors.border.b, 0.4);
+    cairo_set_line_width(cr, 1.0);
+    cairo_move_to(cr, 22, 126);
+    cairo_line_to(cr, w - 22, 126);
+    cairo_stroke(cr);
+
+    // 8. Custom Time Stepper Row (Setting Waktu yang Diinginkan)
+    int step_y = 134;
+    int step_h = 24;
+
+    std::string step_lbl = "󰥔 Atur:";
+    pango_layout_set_text(layout, step_lbl.c_str(), -1);
+    int lw, lh;
+    pango_layout_get_pixel_size(layout, &lw, &lh);
+
+    int btn_step_w = 24;
+    int box_w = 34;
+    int gap = 3;
+
+    int total_step_w = lw + 14 + (btn_step_w * 4) + (box_w * 2) + (gap * 4) + 18;
+    int cur_x = (w - total_step_w) / 2;
+
+    cairo_set_source_rgba(cr, config.colors.accent.r, config.colors.accent.g, config.colors.accent.b, 0.95);
+    cairo_move_to(cr, cur_x, step_y + (step_h - lh) / 2);
+    pango_cairo_show_layout(cr, layout);
+    cur_x += lw + 14;
+
+    auto draw_stepper_btn = [&](int bx, int by, int bw, int bh, const std::string& txt, const std::string& action, const std::string& param) {
+        cairo_new_sub_path(cr);
+        double r = 4.0;
+        cairo_arc(cr, bx + r, by + r, r, M_PI, 3 * M_PI / 2);
+        cairo_arc(cr, bx + bw - r, by + r, r, -M_PI / 2, 0);
+        cairo_arc(cr, bx + bw - r, by + bh - r, r, 0, M_PI / 2);
+        cairo_arc(cr, bx + r, by + bh - r, r, M_PI / 2, M_PI);
+        cairo_close_path(cr);
+        cairo_set_source_rgba(cr, config.colors.card_bg.r, config.colors.card_bg.g, config.colors.card_bg.b, 0.95);
+        cairo_fill_preserve(cr);
+        cairo_set_source_rgba(cr, config.colors.border.r, config.colors.border.g, config.colors.border.b, 0.7);
+        cairo_set_line_width(cr, 1.0);
+        cairo_stroke(cr);
+
+        pango_layout_set_text(layout, txt.c_str(), -1);
+        int btw, bth;
+        pango_layout_get_pixel_size(layout, &btw, &bth);
+        cairo_set_source_rgba(cr, config.colors.text.r, config.colors.text.g, config.colors.text.b, 1.0);
+        cairo_move_to(cr, bx + (bw - btw) / 2, by + (bh - bth) / 2);
+        pango_cairo_show_layout(cr, layout);
+
+        hitboxes.push_back({bx, by, bw, bh, action, param});
+    };
+
+    // Hour dec [-]
+    draw_stepper_btn(cur_x, step_y, btn_step_w, step_h, "-", "time_adj", "h_dec");
+    cur_x += btn_step_w + gap;
+
+    // Hour box [HH]
+    char h_str[8];
+    snprintf(h_str, sizeof(h_str), "%02d", m_set_hour);
+    draw_stepper_btn(cur_x, step_y, box_w, step_h, h_str, "time_adj", "h_inc");
+    m_hour_box_x = cur_x;
+    m_hour_box_w = box_w;
+    cur_x += box_w + gap;
+
+    // Hour inc [+]
+    draw_stepper_btn(cur_x, step_y, btn_step_w, step_h, "+", "time_adj", "h_inc");
+    cur_x += btn_step_w + 6;
+
+    // Colon separator
+    pango_layout_set_text(layout, ":", -1);
+    int col_w, col_h;
+    pango_layout_get_pixel_size(layout, &col_w, &col_h);
+    cairo_set_source_rgba(cr, config.colors.subtext.r, config.colors.subtext.g, config.colors.subtext.b, 0.9);
+    cairo_move_to(cr, cur_x, step_y + (step_h - col_h) / 2);
+    pango_cairo_show_layout(cr, layout);
+    cur_x += col_w + 6;
+
+    // Minute dec [-]
+    draw_stepper_btn(cur_x, step_y, btn_step_w, step_h, "-", "time_adj", "m_dec");
+    cur_x += btn_step_w + gap;
+
+    // Minute box [MM]
+    char m_str[8];
+    snprintf(m_str, sizeof(m_str), "%02d", m_set_minute);
+    draw_stepper_btn(cur_x, step_y, box_w, step_h, m_str, "time_adj", "m_inc");
+    m_min_box_x = cur_x;
+    m_min_box_w = box_w;
+    cur_x += box_w + gap;
+
+    // Minute inc [+]
+    draw_stepper_btn(cur_x, step_y, btn_step_w, step_h, "+", "time_adj", "m_inc");
+
+    m_stepper_y = step_y;
+    m_stepper_h = step_h;
+
+    // 9. Action Buttons: [ 󰂞 Alarm HH:MM ]  and  [ 󰔟 Mulai Timer ]
+    int act_y = 166;
+    int act_h = 26;
+    int act_w = 156;
+    int act_spacing = 16;
+    int act_start_x = (w - (act_w * 2 + act_spacing)) / 2;
+
+    // Button 1: Set Alarm HH:MM
+    int b1_x = act_start_x;
+    cairo_new_sub_path(cr);
+    double br1 = 5.0;
+    cairo_arc(cr, b1_x + br1, act_y + br1, br1, M_PI, 3 * M_PI / 2);
+    cairo_arc(cr, b1_x + act_w - br1, act_y + br1, br1, -M_PI / 2, 0);
+    cairo_arc(cr, b1_x + act_w - br1, act_y + act_h - br1, br1, 0, M_PI / 2);
+    cairo_arc(cr, b1_x + br1, act_y + act_h - br1, br1, M_PI / 2, M_PI);
+    cairo_close_path(cr);
+    cairo_set_source_rgba(cr, config.colors.accent.r, config.colors.accent.g, config.colors.accent.b, 0.25);
+    cairo_fill_preserve(cr);
+    cairo_set_source_rgba(cr, config.colors.accent.r, config.colors.accent.g, config.colors.accent.b, 0.85);
+    cairo_set_line_width(cr, 1.0);
+    cairo_stroke(cr);
+
+    char al_txt[32];
+    snprintf(al_txt, sizeof(al_txt), "󰂞 Alarm %02d:%02d", m_set_hour, m_set_minute);
+    pango_layout_set_text(layout, al_txt, -1);
+    pango_layout_get_pixel_size(layout, &tw, &th);
+    cairo_set_source_rgba(cr, 1.0, 1.0, 1.0, 1.0);
+    cairo_move_to(cr, b1_x + (act_w - tw) / 2, act_y + (act_h - th) / 2);
+    pango_cairo_show_layout(cr, layout);
+
+    hitboxes.push_back({b1_x, act_y, act_w, act_h, "set_custom_alarm", ""});
+
+    // Button 2: Set Timer
+    int b2_x = b1_x + act_w + act_spacing;
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, b2_x + br1, act_y + br1, br1, M_PI, 3 * M_PI / 2);
+    cairo_arc(cr, b2_x + act_w - br1, act_y + br1, br1, -M_PI / 2, 0);
+    cairo_arc(cr, b2_x + act_w - br1, act_y + act_h - br1, br1, 0, M_PI / 2);
+    cairo_arc(cr, b2_x + br1, act_y + act_h - br1, br1, M_PI / 2, M_PI);
+    cairo_close_path(cr);
+    cairo_set_source_rgba(cr, config.colors.card_bg.r, config.colors.card_bg.g, config.colors.card_bg.b, 0.95);
+    cairo_fill_preserve(cr);
+    cairo_set_source_rgba(cr, config.colors.accent_blue.r, config.colors.accent_blue.g, config.colors.accent_blue.b, 0.8);
+    cairo_set_line_width(cr, 1.0);
+    cairo_stroke(cr);
+
+    char tm_txt[32];
+    if (m_set_hour == 0 && m_set_minute > 0) {
+        snprintf(tm_txt, sizeof(tm_txt), "󰔟 Timer %dm", m_set_minute);
+    } else if (m_set_hour > 0 && m_set_minute == 0) {
+        snprintf(tm_txt, sizeof(tm_txt), "󰔟 Timer %dh", m_set_hour);
+    } else if (m_set_hour > 0) {
+        snprintf(tm_txt, sizeof(tm_txt), "󰔟 Timer %dh %dm", m_set_hour, m_set_minute);
+    } else {
+        snprintf(tm_txt, sizeof(tm_txt), "󰔟 Mulai Timer");
+    }
+    pango_layout_set_text(layout, tm_txt, -1);
+    pango_layout_get_pixel_size(layout, &tw, &th);
+    cairo_set_source_rgba(cr, config.colors.accent_blue.r, config.colors.accent_blue.g, config.colors.accent_blue.b, 1.0);
+    cairo_move_to(cr, b2_x + (act_w - tw) / 2, act_y + (act_h - th) / 2);
+    pango_cairo_show_layout(cr, layout);
+
+    hitboxes.push_back({b2_x, act_y, act_w, act_h, "set_custom_timer", ""});
 
     g_object_unref(layout);
 
@@ -639,7 +857,8 @@ bool ClockModule::handle_click(const std::string& action, const std::string& par
     if (action == "quick_timer") {
         int minutes = std::atoi(param.c_str());
         if (minutes > 0) {
-            add_timer(minutes * 60, "Timer " + param + "m");
+            std::string lbl = (minutes >= 60) ? ("Timer " + std::to_string(minutes / 60) + "h") : ("Timer " + param + "m");
+            add_timer(minutes * 60, lbl);
             return true;
         }
     } else if (action == "alarm_cancel") {
@@ -651,6 +870,24 @@ bool ClockModule::handle_click(const std::string& action, const std::string& par
         return true;
     } else if (action == "alarm_snooze") {
         snooze_alarm(5);
+        return true;
+    } else if (action == "time_adj") {
+        if (param == "h_inc") adjust_hour(1);
+        else if (param == "h_dec") adjust_hour(-1);
+        else if (param == "m_inc") adjust_minute(5);
+        else if (param == "m_dec") adjust_minute(-5);
+        else if (param == "m_inc1") adjust_minute(1);
+        else if (param == "m_dec1") adjust_minute(-1);
+        return true;
+    } else if (action == "set_custom_alarm") {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Alarm %02d:%02d", m_set_hour, m_set_minute);
+        add_alarm(m_set_hour, m_set_minute, buf);
+        return true;
+    } else if (action == "set_custom_timer") {
+        int total_secs = (m_set_hour * 3600) + (m_set_minute * 60);
+        if (total_secs <= 0) total_secs = 300; // default 5m
+        add_timer(total_secs, "");
         return true;
     }
     return false;

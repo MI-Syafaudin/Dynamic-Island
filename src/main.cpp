@@ -1,5 +1,6 @@
 #include <iostream>
 #include <csignal>
+#include <cstring>
 #include <string>
 #include <vector>
 #include "app.hpp"
@@ -26,19 +27,23 @@ static void print_help(const char* prog) {
               << "  " << prog << "                     Start Dynamic Island daemon\n"
               << "  " << prog << " toggle              Toggle Island expand / collapse\n"
               << "  " << prog << " collapse            Force collapse to idle\n"
-              << "  " << prog << " expand <mode>       Expand to mode (audio|brightness|media|system|clock|alarm|network|quick)\n"
+              << "  " << prog << " expand <mode>       Expand to mode (audio|brightness|media|system|clock|alarm|battery|network|quick)\n"
               << "  " << prog << " volume <val>        Adjust volume (+5%, -5%, toggle)\n"
               << "  " << prog << " brightness <val>    Adjust brightness (+5%, -5%)\n"
               << "  " << prog << " media <action>      Control playback (play-pause|next|previous)\n"
               << "  " << prog << " screenshot <mode>   Take screenshot (full|area)\n"
               << "  " << prog << " notify <app> <msg>  Show notification banner on island\n"
-              << "  " << prog << " alarm set <HH:MM> [lbl] Set alarm at HH:MM\n"
-              << "  " << prog << " alarm in <min> [lbl]    Set timer in N minutes\n"
+              << "  " << prog << " battery             Show battery status\n"
+              << "  " << prog << " battery test [lvl]  Test critical battery alarm (e.g. battery test 5)\n"
+              << "  " << prog << " battery dismiss     Dismiss ringing battery alarm\n"
+              << "  " << prog << " battery snooze [m]  Snooze battery alarm (default 5m)\n"
+              << "  " << prog << " alarm [set] <HH:MM> [lbl] Set alarm at HH:MM (e.g. alarm 07:30)\n"
+              << "  " << prog << " alarm [in] <dur> [lbl]    Set timer (e.g. alarm 15m, alarm 300s)\n"
               << "  " << prog << " alarm list          List active alarms and timers\n"
               << "  " << prog << " alarm cancel <id|all> Cancel alarm(s)\n"
               << "  " << prog << " alarm dismiss       Dismiss ringing alarm\n"
               << "  " << prog << " alarm snooze [min]  Snooze ringing alarm\n"
-              << "  " << prog << " timer <min> [lbl]   Quick timer shortcut\n"
+              << "  " << prog << " timer <dur> [lbl]   Quick timer shortcut (e.g. timer 15m)\n"
               << "  " << prog << " reload              Reload config.json\n"
               << "  " << prog << " quit                Stop running daemon\n"
               << "  " << prog << " version             Show version and author info\n"
@@ -94,6 +99,13 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, sig_handler);
     std::signal(SIGTERM, sig_handler);
     std::signal(SIGHUP, SIG_IGN);
+
+    // Reap child processes automatically to prevent zombie (<defunct>) processes
+    struct sigaction sa;
+    std::memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = SIG_IGN;
+    sa.sa_flags = SA_NOCLDWAIT | SA_RESTART;
+    sigaction(SIGCHLD, &sa, nullptr);
 
     std::cout << "[Dynamic Island] Initializing native Wayland Layer Shell (by MI-Syafaudin)...\n";
     if (!app.init()) {

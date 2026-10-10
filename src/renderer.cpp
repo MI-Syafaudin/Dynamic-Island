@@ -245,6 +245,11 @@ void Renderer::render_island(
                     }
                 }
                 break;
+            case IslandMode::Expanded_BatteryAlert:
+                if (modules.size() > 5 && modules[5]) { // BatteryModule
+                    modules[5]->draw_expanded(cr, m_font_desc, config, width, height, hitboxes);
+                }
+                break;
             default:
                 break;
         }

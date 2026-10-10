@@ -35,11 +35,14 @@ case "$cmd" in
     alarm)
         $BIN alarm "$@"
         ;;
+    battery)
+        $BIN battery "$@"
+        ;;
     timer)
         $BIN timer "$@"
         ;;
     *)
-        echo "Usage: $0 {toggle|collapse|expand <mode>|volume <val>|brightness <val>|media <act>|screenshot <mode>|notify <app> <msg>|alarm <args>|timer <args>|reload|quit}"
+        echo "Usage: $0 {toggle|collapse|expand <mode>|volume <val>|brightness <val>|media <act>|screenshot <mode>|notify <app> <msg>|battery <args>|alarm <args>|timer <args>|reload|quit}"
         exit 1
         ;;
 esac

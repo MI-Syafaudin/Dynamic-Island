@@ -27,9 +27,57 @@ void App::play_alarm_sound() {
             dup2(devnull, STDERR_FILENO);
             close(devnull);
         }
-        execlp("pw-play", "pw-play", "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga", (char*)nullptr);
-        execlp("paplay", "paplay", "/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga", (char*)nullptr);
-        execlp("canberra-gtk-play", "canberra-gtk-play", "-i", "alarm-clock-elapsed", (char*)nullptr);
+        // Multi-tier audio fallback: PipeWire -> PulseAudio -> Canberra -> ALSA -> ffplay -> terminal bell
+        const char* script =
+            "for s in "
+            "'/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga' "
+            "'/usr/share/sounds/freedesktop/stereo/complete.oga' "
+            "'/usr/share/sounds/freedesktop/stereo/bell.oga' "
+            "'/usr/share/sounds/alsa/Front_Center.wav'; do "
+            "  if [ -f \"$s\" ]; then "
+            "    pw-play \"$s\" 2>/dev/null && exit 0; "
+            "    paplay \"$s\" 2>/dev/null && exit 0; "
+            "    canberra-gtk-play -f \"$s\" 2>/dev/null && exit 0; "
+            "    aplay \"$s\" 2>/dev/null && exit 0; "
+            "    ffplay -nodisp -autoexit \"$s\" 2>/dev/null && exit 0; "
+            "  fi; "
+            "done; "
+            "canberra-gtk-play -i alarm-clock-elapsed 2>/dev/null && exit 0; "
+            "printf '\\a'; exit 0";
+        execlp("sh", "sh", "-c", script, (char*)nullptr);
+        _exit(1);
+    } else if (pid > 0) {
+        m_sound_pid = pid;
+    }
+}
+
+void App::play_ting_sound() {
+    stop_alarm_sound();
+    pid_t pid = fork();
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        // Crisp "ting" sound: bell.oga -> complete.oga -> message-new-instant.oga -> terminal bell '\a'
+        const char* script =
+            "for s in "
+            "'/usr/share/sounds/freedesktop/stereo/bell.oga' "
+            "'/usr/share/sounds/freedesktop/stereo/complete.oga' "
+            "'/usr/share/sounds/freedesktop/stereo/message-new-instant.oga'; do "
+            "  if [ -f \"$s\" ]; then "
+            "    pw-play \"$s\" 2>/dev/null && exit 0; "
+            "    paplay \"$s\" 2>/dev/null && exit 0; "
+            "    canberra-gtk-play -f \"$s\" 2>/dev/null && exit 0; "
+            "    aplay \"$s\" 2>/dev/null && exit 0; "
+            "    ffplay -nodisp -autoexit \"$s\" 2>/dev/null && exit 0; "
+            "  fi; "
+            "done; "
+            "canberra-gtk-play -i bell 2>/dev/null && exit 0; "
+            "printf '\\a'; exit 0";
+        execlp("sh", "sh", "-c", script, (char*)nullptr);
         _exit(1);
     } else if (pid > 0) {
         m_sound_pid = pid;
@@ -39,7 +87,6 @@ void App::play_alarm_sound() {
 void App::stop_alarm_sound() {
     if (m_sound_pid > 0) {
         kill(m_sound_pid, SIGTERM);
-        waitpid(m_sound_pid, nullptr, WNOHANG);
         m_sound_pid = -1;
     }
 }
@@ -57,6 +104,24 @@ void App::snooze_alarm(int minutes) {
     stop_alarm_sound();
     if (m_clock_mod) {
         m_clock_mod->snooze_alarm(minutes);
+    }
+    m_idle_width_dirty = true;
+    collapse();
+}
+
+void App::dismiss_battery_alarm() {
+    stop_alarm_sound();
+    if (m_bat_mod) {
+        m_bat_mod->dismiss_alarm();
+    }
+    m_idle_width_dirty = true;
+    collapse();
+}
+
+void App::snooze_battery_alarm(int minutes) {
+    stop_alarm_sound();
+    if (m_bat_mod) {
+        m_bat_mod->snooze_alarm(minutes);
     }
     m_idle_width_dirty = true;
     collapse();
@@ -274,12 +339,20 @@ void App::get_target_dimensions(IslandMode mode, double& w, double& h) {
             h = 136.0;
             break;
         case IslandMode::Expanded_Clock:
-            w = 340.0;
-            h = 142.0;
+            w = 380.0;
+            h = 204.0;
             break;
         case IslandMode::Expanded_Alarm:
             w = 360.0;
             h = 96.0;
+            break;
+        case IslandMode::Expanded_BatteryAlert:
+            if (m_bat_mod) {
+                m_bat_mod->get_preferred_dimensions(m_renderer.get_font_desc(), m_config, w, h);
+            } else {
+                w = 420.0;
+                h = 64.0;
+            }
             break;
         case IslandMode::Expanded_Network:
             w = 310.0;
@@ -515,6 +588,18 @@ void App::on_mouse_button(double x, double y, uint32_t button, bool pressed) {
                     snooze_alarm(5);
                     return;
                 }
+                if (hb.action == "battery_alarm_dismiss" || hb.action == "battery_dismiss") {
+                    dismiss_battery_alarm();
+                    return;
+                }
+                if (hb.action == "battery_alarm_snooze" || hb.action == "battery_snooze") {
+                    snooze_battery_alarm(5);
+                    return;
+                }
+                if (hb.action == "battery_info") {
+                    toggle_mode(IslandMode::Expanded_BatteryAlert);
+                    return;
+                }
                 if (hb.action == "alarm_cancel") {
                     if (m_clock_mod) {
                         int id = std::atoi(hb.param.c_str());
@@ -527,7 +612,16 @@ void App::on_mouse_button(double x, double y, uint32_t button, bool pressed) {
                 if (hb.action == "quick_timer") {
                     if (m_clock_mod) {
                         int mins = std::atoi(hb.param.c_str());
-                        m_clock_mod->add_timer(mins * 60, "Timer " + hb.param + "m");
+                        std::string lbl = (mins >= 60) ? ("Timer " + std::to_string(mins / 60) + "h") : ("Timer " + hb.param + "m");
+                        m_clock_mod->add_timer(mins * 60, lbl);
+                    }
+                    m_idle_width_dirty = true;
+                    render_current_state();
+                    return;
+                }
+                if (hb.action == "time_adj" || hb.action == "set_custom_alarm" || hb.action == "set_custom_timer") {
+                    if (m_clock_mod) {
+                        m_clock_mod->handle_click(hb.action, hb.param);
                     }
                     m_idle_width_dirty = true;
                     render_current_state();
@@ -536,6 +630,7 @@ void App::on_mouse_button(double x, double y, uint32_t button, bool pressed) {
                 if (hb.action == "toggle_expand") {
                     if (hb.param == "clock") toggle_mode(IslandMode::Expanded_Clock);
                     else if (hb.param == "alarm") toggle_mode(IslandMode::Expanded_Alarm);
+                    else if (hb.param == "battery" || hb.param == "battery_alert") toggle_mode(IslandMode::Expanded_BatteryAlert);
                     else if (hb.param == "media") toggle_mode(IslandMode::Expanded_Media);
                     else if (hb.param == "system") toggle_mode(IslandMode::Expanded_System);
                     else if (hb.param == "network") toggle_mode(IslandMode::Expanded_Network);
@@ -564,6 +659,8 @@ void App::on_mouse_button(double x, double y, uint32_t button, bool pressed) {
         // If clicked on island body but no specific button, toggle clock/idle
         if (m_mode == IslandMode::Expanded_Alarm) {
             dismiss_alarm();
+        } else if (m_mode == IslandMode::Expanded_BatteryAlert) {
+            dismiss_battery_alarm();
         } else if (m_mode != IslandMode::Idle) {
             collapse();
         }
@@ -576,10 +673,16 @@ void App::on_mouse_motion(double x, double y) {
 }
 
 void App::on_mouse_scroll(double delta) {
-    int step = (delta > 0) ? -5 : 5;
     if (m_mode == IslandMode::Expanded_Brightness) {
+        int step = (delta > 0) ? -5 : 5;
         set_brightness(step);
+    } else if (m_mode == IslandMode::Expanded_Clock) {
+        if (m_clock_mod) {
+            m_clock_mod->handle_scroll(m_wayland.get_pointer_x(), m_wayland.get_pointer_y(), delta);
+            render_current_state();
+        }
     } else if (m_audio_mod) {
+        int step = (delta > 0) ? -5 : 5;
         m_audio_mod->change_volume(step);
         expand_to(IslandMode::Expanded_Audio, m_config.timeouts.volume_ms);
     }
@@ -595,6 +698,7 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
             else if (target == "system") toggle_mode(IslandMode::Expanded_System);
             else if (target == "clock") toggle_mode(IslandMode::Expanded_Clock);
             else if (target == "alarm") toggle_mode(IslandMode::Expanded_Alarm);
+            else if (target == "battery" || target == "battery_alert") toggle_mode(IslandMode::Expanded_BatteryAlert);
             else if (target == "network") toggle_mode(IslandMode::Expanded_Network);
             else if (target == "quick") toggle_mode(IslandMode::Expanded_QuickActions);
             return "OK";
@@ -651,6 +755,12 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
                     collapse();
                 } else {
                     expand_to(IslandMode::Expanded_Alarm, 0);
+                }
+            } else if (target == "battery" || target == "battery_alert") {
+                if (m_mode == IslandMode::Expanded_BatteryAlert) {
+                    collapse();
+                } else {
+                    expand_to(IslandMode::Expanded_BatteryAlert, 0);
                 }
             } else if (target == "network") {
                 if (m_mode == IslandMode::Expanded_Network) {
@@ -728,6 +838,40 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
         notify(app_name, msg);
         return "OK";
     }
+    if (cmd == "battery") {
+        std::string sub = (args.size() > 0) ? args[0] : "";
+        std::string param = (args.size() > 1) ? args[1] : "";
+
+        if (sub == "dismiss") {
+            dismiss_battery_alarm();
+            return "Battery alert dismissed\n";
+        }
+        if (sub == "snooze") {
+            int mins = 5;
+            if (!param.empty()) mins = std::atoi(param.c_str());
+            if (mins <= 0) mins = 5;
+            snooze_battery_alarm(mins);
+            return "Battery alert snoozed for " + std::to_string(mins) + " minutes\n";
+        }
+        if (sub == "alert" || sub == "test") {
+            int test_lvl = 5;
+            if (!param.empty()) test_lvl = std::atoi(param.c_str());
+            if (test_lvl <= 0) test_lvl = 5;
+            if (m_bat_mod) {
+                m_bat_mod->trigger_test_alert(test_lvl);
+                expand_to(IslandMode::Expanded_BatteryAlert, 6000);
+                play_ting_sound();
+                return "Battery alert triggered (test mode: " + std::to_string(test_lvl) + "%)\n";
+            }
+            return "Battery module not available\n";
+        }
+
+        if (!m_bat_mod || !m_bat_mod->is_available()) {
+            return "Battery not available\n";
+        }
+        std::string status = m_bat_mod->is_charging() ? "Charging" : "Discharging";
+        return "Battery: " + std::to_string(m_bat_mod->get_percentage()) + "% (" + status + ")\n";
+    }
     if (cmd == "alarm") {
         if (args.empty() || args[0] == "list") {
             if (m_clock_mod) {
@@ -736,51 +880,97 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
             return "Clock module not available\n";
         }
         std::string sub = args[0];
-        if (sub == "set") {
-            if (args.size() < 2) return "Usage: alarm set <HH:MM> [label]\n";
-            std::string time_str = args[1];
+
+        // Check if sub is a direct time string like "07:30", "7:30", "07.30"
+        bool is_direct_time = false;
+        size_t sep_pos = sub.find(':');
+        if (sep_pos == std::string::npos) {
+            sep_pos = sub.find('.');
+        }
+        if (sep_pos != std::string::npos && sep_pos > 0 && sep_pos < sub.size() - 1) {
+            bool all_digits = true;
+            for (size_t i = 0; i < sub.size(); ++i) {
+                if (i != sep_pos && !std::isdigit(static_cast<unsigned char>(sub[i]))) {
+                    all_digits = false;
+                    break;
+                }
+            }
+            if (all_digits) is_direct_time = true;
+        }
+
+        // Check if sub is a direct duration string like "10m", "300s", "1h", or a number "15"
+        bool is_direct_duration = false;
+        if (!is_direct_time && sub != "set" && sub != "in" && sub != "timer" &&
+            sub != "cancel" && sub != "dismiss" && sub != "stop" && sub != "snooze") {
+            bool valid_dur = true;
+            int digit_count = 0;
+            for (char c : sub) {
+                if (std::isdigit(static_cast<unsigned char>(c))) digit_count++;
+                else if (c != 'm' && c != 'M' && c != 's' && c != 'S' && c != 'h' && c != 'H') {
+                    valid_dur = false;
+                    break;
+                }
+            }
+            if (valid_dur && digit_count > 0) is_direct_duration = true;
+        }
+
+        if (is_direct_time || sub == "set") {
+            std::string time_str = is_direct_time ? sub : (args.size() > 1 ? args[1] : "");
+            if (time_str.empty()) return "Usage: alarm set <HH:MM> [label]\n";
             size_t colon = time_str.find(':');
+            if (colon == std::string::npos) colon = time_str.find('.');
             if (colon == std::string::npos) return "Invalid time format. Use HH:MM\n";
             int h = std::atoi(time_str.substr(0, colon).c_str());
             int m = std::atoi(time_str.substr(colon + 1).c_str());
             if (h < 0 || h > 23 || m < 0 || m > 59) return "Invalid time: " + time_str + "\n";
+            size_t label_start = is_direct_time ? 1 : 2;
             std::string label;
-            for (size_t i = 2; i < args.size(); ++i) {
-                if (i > 2) label += " ";
+            for (size_t i = label_start; i < args.size(); ++i) {
+                if (i > label_start) label += " ";
                 label += args[i];
             }
             if (m_clock_mod) {
                 int id = m_clock_mod->add_alarm(h, m, label);
                 m_idle_width_dirty = true;
                 if (m_mode == IslandMode::Idle) render_current_state();
-                return "Alarm set for " + time_str + " (\"" + (label.empty() ? "Alarm" : label) + "\") [ID: " + std::to_string(id) + "]\n";
+                char time_formatted[16];
+                snprintf(time_formatted, sizeof(time_formatted), "%02d:%02d", h, m);
+                return "Alarm set for " + std::string(time_formatted) + " (\"" + (label.empty() ? "Alarm" : label) + "\") [ID: " + std::to_string(id) + "]\n";
             }
             return "Clock module not available\n";
         }
-        if (sub == "in" || sub == "timer") {
-            if (args.size() < 2) return "Usage: alarm in <duration[s|m]> [label]\n";
-            std::string dur_str = args[1];
+        if (is_direct_duration || sub == "in" || sub == "timer") {
+            std::string dur_str = is_direct_duration ? sub : (args.size() > 1 ? args[1] : "");
+            if (dur_str.empty()) return "Usage: alarm in <duration[s|m|h]> [label]\n";
             int total_secs = 0;
-            if (!dur_str.empty() && (dur_str.back() == 's' || dur_str.back() == 'S')) {
+            if (dur_str.back() == 's' || dur_str.back() == 'S') {
                 total_secs = std::atoi(dur_str.substr(0, dur_str.size() - 1).c_str());
-            } else if (!dur_str.empty() && (dur_str.back() == 'm' || dur_str.back() == 'M')) {
+            } else if (dur_str.back() == 'm' || dur_str.back() == 'M') {
                 total_secs = std::atoi(dur_str.substr(0, dur_str.size() - 1).c_str()) * 60;
+            } else if (dur_str.back() == 'h' || dur_str.back() == 'H') {
+                total_secs = std::atoi(dur_str.substr(0, dur_str.size() - 1).c_str()) * 3600;
             } else {
                 total_secs = std::atoi(dur_str.c_str()) * 60;
             }
             if (total_secs <= 0) return "Duration must be > 0\n";
+            size_t label_start = is_direct_duration ? 1 : 2;
             std::string label;
-            for (size_t i = 2; i < args.size(); ++i) {
-                if (i > 2) label += " ";
+            for (size_t i = label_start; i < args.size(); ++i) {
+                if (i > label_start) label += " ";
                 label += args[i];
             }
             if (m_clock_mod) {
                 int id = m_clock_mod->add_timer(total_secs, label);
                 m_idle_width_dirty = true;
                 if (m_mode == IslandMode::Idle) render_current_state();
-                std::string dur_display = (total_secs >= 60 && total_secs % 60 == 0)
-                    ? (std::to_string(total_secs / 60) + " minute(s)")
-                    : (std::to_string(total_secs) + " second(s)");
+                std::string dur_display;
+                if (total_secs >= 3600 && total_secs % 3600 == 0) {
+                    dur_display = std::to_string(total_secs / 3600) + " hour(s)";
+                } else if (total_secs >= 60 && total_secs % 60 == 0) {
+                    dur_display = std::to_string(total_secs / 60) + " minute(s)";
+                } else {
+                    dur_display = std::to_string(total_secs) + " second(s)";
+                }
                 return "Timer set for " + dur_display + " [ID: " + std::to_string(id) + "]\n";
             }
             return "Clock module not available\n";
@@ -836,8 +1026,8 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
         return "Config reloaded";
     }
     if (cmd == "quit") {
-        stop();
-        return "Stopping";
+        m_running = false;
+        return "Stopping\n";
     }
     return "Unknown command: " + cmd;
 }
@@ -942,9 +1132,10 @@ void App::run() {
             m_last_clock_update = now;
             bool clock_dirty = false;
             static std::string last_idle_time;
+            static bool last_had_timer = false;
 
             if (m_clock_mod) {
-                m_clock_mod->update();
+                m_clock_mod->update(m_mode == IslandMode::Expanded_Clock || m_mode == IslandMode::Expanded_Alarm);
 
                 // Check alarms
                 AlarmItem triggered;
@@ -952,6 +1143,21 @@ void App::run() {
                     expand_to(IslandMode::Expanded_Alarm, 0);
                     play_alarm_sound();
                     m_last_alarm_sound = now;
+
+                    // Desktop notification via notify-send as well for maximum reliability
+                    pid_t n_pid = fork();
+                    if (n_pid == 0) {
+                        int devnull = open("/dev/null", O_WRONLY);
+                        if (devnull >= 0) {
+                            dup2(devnull, STDOUT_FILENO);
+                            dup2(devnull, STDERR_FILENO);
+                            close(devnull);
+                        }
+                        std::string title = triggered.is_timer ? "Timer Selesai!" : "Alarm Berbunyi!";
+                        std::string body = triggered.label.empty() ? "Waktu telah habis." : triggered.label;
+                        execlp("notify-send", "notify-send", "-u", "critical", "-i", "alarm-clock", title.c_str(), body.c_str(), (char*)nullptr);
+                        _exit(0);
+                    }
                 }
 
                 if (m_mode == IslandMode::Expanded_Alarm) {
@@ -963,18 +1169,32 @@ void App::run() {
                     render_current_state();
                 }
 
+                if (m_mode == IslandMode::Expanded_BatteryAlert) {
+                    if (m_bat_mod) {
+                        m_bat_mod->update();
+                        if (m_bat_mod->is_charging()) {
+                            dismiss_battery_alarm();
+                        }
+                    }
+                }
+
+                bool has_timer = m_clock_mod->has_active_timer();
                 if (m_clock_mod->get_time_str() != last_idle_time ||
-                    m_clock_mod->has_active_timer() ||
+                    has_timer ||
                     m_clock_mod->is_any_alarm_ringing()) {
                     last_idle_time = m_clock_mod->get_time_str();
                     clock_dirty = true;
+                }
+
+                if (has_timer != last_had_timer) {
+                    last_had_timer = has_timer;
+                    m_idle_width_dirty = true;
                 }
             }
 
             if (m_mode == IslandMode::Expanded_Clock) {
                 render_current_state();
             } else if (m_mode == IslandMode::Idle && clock_dirty) {
-                m_idle_width_dirty = true;
                 render_current_state();
             }
         }
@@ -983,7 +1203,7 @@ void App::run() {
         if (m_sys_mod && std::chrono::duration_cast<std::chrono::milliseconds>(now - m_last_system_update).count() >= 1500) {
             m_last_system_update = now;
             int old_cpu = m_sys_mod->get_cpu_percent();
-            m_sys_mod->update();
+            m_sys_mod->update(m_mode == IslandMode::Expanded_System);
             int new_cpu = m_sys_mod->get_cpu_percent();
 
             if (m_mode == IslandMode::Expanded_System) {
@@ -1024,6 +1244,34 @@ void App::run() {
                 if (old_pct != m_bat_mod->get_percentage() || old_chg != m_bat_mod->is_charging()) {
                     slow_changed = true;
                 }
+
+                // If battery alert is active and charger is plugged in, auto-dismiss
+                if (m_mode == IslandMode::Expanded_BatteryAlert && m_bat_mod->is_charging()) {
+                    dismiss_battery_alarm();
+                }
+
+                // Check critical battery alert (0% extra CPU/RAM overhead)
+                int crit_lvl = 0;
+                std::string crit_msg;
+                if (m_bat_mod->check_critical_alert(crit_lvl, crit_msg)) {
+                    // Non-blocking desktop notification
+                    pid_t b_pid = fork();
+                    if (b_pid == 0) {
+                        int devnull = open("/dev/null", O_WRONLY);
+                        if (devnull >= 0) {
+                            dup2(devnull, STDOUT_FILENO);
+                            dup2(devnull, STDERR_FILENO);
+                            close(devnull);
+                        }
+                        execlp("notify-send", "notify-send", "-u", "critical", "-i", "battery-caution",
+                               "Peringatan Baterai", crit_msg.c_str(), (char*)nullptr);
+                        _exit(0);
+                    }
+
+                    // Low & Critical battery alert: Dedicated banner with "ting" sound (6s timeout)
+                    expand_to(IslandMode::Expanded_BatteryAlert, 6000);
+                    play_ting_sound();
+                }
             }
             if (m_net_mod) {
                 bool old_conn = m_net_mod->is_connected();
@@ -1053,6 +1301,8 @@ void App::run() {
             }
         }
     }
+
+    stop();
 }
 
 void App::stop() {

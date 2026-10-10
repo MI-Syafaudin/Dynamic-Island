@@ -40,9 +40,12 @@ public:
     void capture_screenshot(bool area_select);
 
     void play_alarm_sound();
+    void play_ting_sound();
     void stop_alarm_sound();
     void dismiss_alarm();
     void snooze_alarm(int minutes = 5);
+    void dismiss_battery_alarm();
+    void snooze_battery_alarm(int minutes = 5);
 
 private:
     bool m_running = false;

@@ -7,7 +7,8 @@ namespace di {
 class SystemModule : public ModuleBase {
 public:
     SystemModule();
-    void update() override;
+    void update() override { update(false); }
+    void update(bool full);
     void draw_compact(cairo_t* cr, PangoFontDescription* font_desc, const Config& config, int& current_x, int y, int h, std::vector<HitBox>& hitboxes) override;
     void draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, const Config& config, int w, int h, std::vector<HitBox>& hitboxes) override;
 

@@ -202,11 +202,13 @@ void SystemModule::update_temp() {
     }
 }
 
-void SystemModule::update() {
+void SystemModule::update(bool full) {
     update_cpu();
-    update_ram();
-    update_gpu();
-    update_temp();
+    if (full) {
+        update_ram();
+        update_gpu();
+        update_temp();
+    }
 }
 
 void SystemModule::draw_compact(cairo_t* cr, PangoFontDescription* font_desc, const Config& config, int& current_x, int y, int h, std::vector<HitBox>& hitboxes) {

@@ -53,6 +53,8 @@ public:
 
     int get_width() const { return m_width; }
     int get_height() const { return m_height; }
+    double get_pointer_x() const { return m_pointer_x; }
+    double get_pointer_y() const { return m_pointer_y; }
 
     // Internal callbacks
     void handle_configure(uint32_t serial, uint32_t width, uint32_t height);
