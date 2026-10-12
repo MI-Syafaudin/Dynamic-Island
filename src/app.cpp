@@ -149,7 +149,10 @@ bool App::init(const std::string& config_path) {
     if (m_config.modules.audio) m_audio_mod = std::make_shared<AudioModule>();
     if (m_config.modules.media) m_media_mod = std::make_shared<MediaModule>();
     if (m_config.modules.battery) m_bat_mod = std::make_shared<BatteryModule>();
-    if (m_config.modules.network) m_net_mod = std::make_shared<NetworkModule>();
+    if (m_config.modules.network) {
+        m_net_mod = std::make_shared<NetworkModule>();
+        m_net_mod->set_ping_target(m_config.ping_target);
+    }
     if (m_config.modules.system) m_sys_mod = std::make_shared<SystemModule>();
     if (m_config.modules.screenshot) m_shot_mod = std::make_shared<ScreenshotModule>();
     if (m_config.modules.notification) m_notif_mod = std::make_shared<NotificationModule>();
@@ -182,6 +185,7 @@ bool App::init(const std::string& config_path) {
     m_last_system_update = now;
     m_last_media_update = now;
     m_last_slow_update = now;
+    m_last_network_update = now;
 
     return true;
 }
@@ -355,8 +359,12 @@ void App::get_target_dimensions(IslandMode mode, double& w, double& h) {
             }
             break;
         case IslandMode::Expanded_Network:
-            w = 310.0;
-            h = 76.0;
+            if (m_net_mod) {
+                m_net_mod->get_preferred_dimensions(m_renderer.get_font_desc(), m_config, w, h);
+            } else {
+                w = 380.0;
+                h = 170.0;
+            }
             break;
         case IslandMode::Expanded_Notification:
             if (m_notif_mod) {
@@ -435,6 +443,9 @@ void App::expand_to(IslandMode mode, int timeout_ms) {
     if (mode == IslandMode::Expanded_QuickActions && m_quick_mod) {
         m_quick_mod->update();
     }
+    if (mode == IslandMode::Expanded_Network && m_net_mod) {
+        m_net_mod->on_expanded();
+    }
 
     if (timeout_ms > 0) {
         m_has_auto_collapse = true;
@@ -448,6 +459,10 @@ void App::expand_to(IslandMode mode, int timeout_ms) {
 
 void App::collapse() {
     if (m_mode == IslandMode::Idle && !m_animating) return;
+
+    if (m_net_mod) {
+        m_net_mod->on_collapsed();
+    }
 
     m_mode = IslandMode::Idle;
     m_has_auto_collapse = false;
@@ -1020,6 +1035,7 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
     }
     if (cmd == "reload") {
         m_config.load_from_file(Config::get_default_config_path());
+        if (m_net_mod) m_net_mod->set_ping_target(m_config.ping_target);
         m_renderer.update_font(m_config);
         m_wayland.set_margin_top(m_config.margin_top);
         update_idle_dimensions(false);
@@ -1073,6 +1089,8 @@ void App::run() {
         int timeout_ms = 1000;
         if (m_animating) {
             timeout_ms = 16; // 60 FPS animation tick
+        } else if (m_mode == IslandMode::Expanded_Network) {
+            timeout_ms = 250; // Real-time network monitor tick
         } else if (m_mode == IslandMode::Expanded_System) {
             timeout_ms = 1500; // System monitor tick
         }
@@ -1195,6 +1213,15 @@ void App::run() {
             if (m_mode == IslandMode::Expanded_Clock) {
                 render_current_state();
             } else if (m_mode == IslandMode::Idle && clock_dirty) {
+                render_current_state();
+            }
+        }
+
+        // Periodic Expanded Network update (real-time ping/jitter/loss/bandwidth)
+        if (m_net_mod && m_mode == IslandMode::Expanded_Network) {
+            auto elapsed_net = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_last_network_update).count();
+            if (m_net_mod->check_and_clear_dirty() || elapsed_net >= 500) {
+                m_last_network_update = now;
                 render_current_state();
             }
         }

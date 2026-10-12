@@ -409,6 +409,7 @@ void WaylandBackend::end_frame() {
     wl_surface_attach(m_surface, buf.buffer, 0, 0);
     wl_surface_damage(m_surface, 0, 0, m_width, m_height);
     wl_surface_commit(m_surface);
+    flush();
 }
 
 int WaylandBackend::get_display_fd() const {

@@ -91,6 +91,7 @@ private:
     std::chrono::steady_clock::time_point m_last_media_update;
     std::chrono::steady_clock::time_point m_last_slow_update;
     std::chrono::steady_clock::time_point m_last_alarm_sound;
+    std::chrono::steady_clock::time_point m_last_network_update;
 
     int m_brightness_val = 65;
     bool m_is_fullscreen = false;

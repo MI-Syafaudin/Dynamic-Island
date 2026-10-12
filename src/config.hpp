@@ -69,6 +69,7 @@ public:
     int max_idle_width = 850;
     int max_window_title_length = 28;
     std::string window_display_mode = "icon"; // "icon", "both", "text"
+    std::string ping_target = "1.1.1.1";
 
     ThemeColors colors;
     ModuleSettings modules;

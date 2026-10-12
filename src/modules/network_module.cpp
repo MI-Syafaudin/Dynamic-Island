@@ -6,11 +6,28 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <cstring>
+#include <cmath>
+#include <sstream>
+#include <iomanip>
+#include <algorithm>
 
 namespace di {
 
 NetworkModule::NetworkModule() {
     query_network();
+    m_worker_running = true;
+    m_worker_thread = std::thread(&NetworkModule::worker_loop, this);
+}
+
+NetworkModule::~NetworkModule() {
+    {
+        std::lock_guard<std::mutex> lock(m_thread_mutex);
+        m_worker_running = false;
+    }
+    m_thread_cv.notify_all();
+    if (m_worker_thread.joinable()) {
+        m_worker_thread.join();
+    }
 }
 
 void NetworkModule::query_local_ip() {
@@ -38,22 +55,32 @@ void NetworkModule::query_network() {
 
     // Fast-path: Check default route in /proc/net/route without spawning any processes
     bool has_default_gateway = false;
+    std::string detected_gw;
     FILE* fr = fopen("/proc/net/route", "r");
     if (fr) {
         char rline[128];
         while (fgets(rline, sizeof(rline), fr)) {
             char iface[32];
             unsigned long dest = 1;
-            if (sscanf(rline, "%31s %lx", iface, &dest) == 2) {
+            unsigned long gw = 0;
+            if (sscanf(rline, "%31s %lx %lx", iface, &dest, &gw) >= 2) {
                 if (dest == 0 && strcmp(iface, "lo") != 0) {
                     has_default_gateway = true;
                     m_interface = iface;
+                    if (gw != 0) {
+                        struct in_addr in;
+                        in.s_addr = gw;
+                        char* g_str = inet_ntoa(in);
+                        if (g_str) detected_gw = g_str;
+                    }
                     break;
                 }
             }
         }
         fclose(fr);
     }
+
+    m_gateway_ip = detected_gw;
 
     if (!has_default_gateway) {
         m_connected = false;
@@ -101,6 +128,7 @@ void NetworkModule::query_network() {
 
     if (m_connected) {
         query_local_ip();
+        query_wifi_signal();
     }
 }
 
@@ -133,36 +161,608 @@ void NetworkModule::draw_compact(cairo_t* cr, PangoFontDescription* font_desc, c
     g_object_unref(layout);
 }
 
+void NetworkModule::query_bandwidth() {
+    FILE* fp = fopen("/proc/net/dev", "r");
+    if (!fp) return;
+
+    char line[256];
+    auto now = std::chrono::steady_clock::now();
+    uint64_t cur_rx = 0;
+    uint64_t cur_tx = 0;
+    bool found = false;
+
+    if (!fgets(line, sizeof(line), fp)) { fclose(fp); return; }
+    if (!fgets(line, sizeof(line), fp)) { fclose(fp); return; }
+
+    while (fgets(line, sizeof(line), fp)) {
+        char* colon = strchr(line, ':');
+        if (!colon) continue;
+
+        *colon = '\0';
+        char* p = line;
+        while (*p == ' ') p++;
+
+        if (m_interface.empty() || strcmp(p, m_interface.c_str()) == 0) {
+            unsigned long long r_b = 0, r_p = 0, r_e = 0, r_d = 0, r_f = 0, r_fr = 0, r_c = 0, r_m = 0;
+            unsigned long long t_b = 0;
+            if (sscanf(colon + 1, "%llu %llu %llu %llu %llu %llu %llu %llu %llu",
+                       &r_b, &r_p, &r_e, &r_d, &r_f, &r_fr, &r_c, &r_m, &t_b) >= 9) {
+                cur_rx = r_b;
+                cur_tx = t_b;
+                found = true;
+                break;
+            }
+        }
+    }
+    fclose(fp);
+
+    if (found) {
+        if (m_last_bandwidth_time.time_since_epoch().count() > 0) {
+            double dt = std::chrono::duration<double>(now - m_last_bandwidth_time).count();
+            if (dt > 0.2) {
+                double rx_diff = (cur_rx >= m_last_rx_bytes) ? static_cast<double>(cur_rx - m_last_rx_bytes) : 0.0;
+                double tx_diff = (cur_tx >= m_last_tx_bytes) ? static_cast<double>(cur_tx - m_last_tx_bytes) : 0.0;
+
+                std::lock_guard<std::mutex> lock(m_metrics_mutex);
+                m_download_speed = rx_diff / dt;
+                m_upload_speed = tx_diff / dt;
+            }
+        }
+        m_last_rx_bytes = cur_rx;
+        m_last_tx_bytes = cur_tx;
+        m_last_bandwidth_time = now;
+    }
+}
+
+void NetworkModule::query_wifi_signal() {
+    if (!m_is_wifi) {
+        std::lock_guard<std::mutex> lock(m_metrics_mutex);
+        m_wifi_signal_pct = 0;
+        m_wifi_signal_dbm = 0;
+        return;
+    }
+
+    FILE* f = fopen("/proc/net/wireless", "r");
+    if (f) {
+        char line[256];
+        int pct = 0;
+        int dbm = 0;
+        bool found = false;
+        while (fgets(line, sizeof(line), f)) {
+            char* colon = strchr(line, ':');
+            if (colon) {
+                int status = 0;
+                float link_qual = 0;
+                float level = 0;
+                if (sscanf(colon + 1, "%d %f %f", &status, &link_qual, &level) >= 3) {
+                    pct = std::clamp(static_cast<int>(std::round(link_qual * 100.0 / 70.0)), 0, 100);
+                    dbm = static_cast<int>(std::round(level));
+                    found = true;
+                    break;
+                }
+            }
+        }
+        fclose(f);
+        if (found) {
+            std::lock_guard<std::mutex> lock(m_metrics_mutex);
+            m_wifi_signal_pct = pct;
+            m_wifi_signal_dbm = dbm;
+        }
+    }
+}
+
+void NetworkModule::measure_gateway_ping() {
+    if (m_gateway_ip.empty()) return;
+
+    std::string cmd = "ping -c 1 -W 1 " + m_gateway_ip + " 2>/dev/null";
+    FILE* fp = popen(cmd.c_str(), "r");
+    double gw_rtt = 0.0;
+    bool success = false;
+    if (fp) {
+        char buf[256];
+        while (fgets(buf, sizeof(buf), fp)) {
+            const char* pos = strstr(buf, "time=");
+            if (pos) {
+                if (sscanf(pos + 5, "%lf", &gw_rtt) == 1) {
+                    success = true;
+                }
+            }
+        }
+        pclose(fp);
+    }
+
+    std::lock_guard<std::mutex> lock(m_metrics_mutex);
+    if (success) {
+        m_gateway_ping = gw_rtt;
+    } else {
+        m_gateway_ping = -1.0;
+    }
+}
+
+void NetworkModule::worker_loop() {
+    while (m_worker_running) {
+        bool active = false;
+        {
+            std::unique_lock<std::mutex> lock(m_thread_mutex);
+            int wait_ms = m_is_active ? 750 : 5000;
+            m_thread_cv.wait_for(lock, std::chrono::milliseconds(wait_ms), [this]() {
+                return !m_worker_running || m_is_active;
+            });
+            if (!m_worker_running) break;
+            active = m_is_active;
+        }
+
+        if (m_connected) {
+            query_bandwidth();
+            query_wifi_signal();
+            measure_ping();
+            measure_gateway_ping();
+            m_dirty = true;
+        } else {
+            std::lock_guard<std::mutex> lock(m_metrics_mutex);
+            m_ping_history.clear();
+            m_ping = 0.0;
+            m_jitter = 0.0;
+            m_packet_loss = 100.0;
+            m_has_ping_data = true;
+            m_gateway_ping = 0.0;
+            m_download_speed = 0.0;
+            m_upload_speed = 0.0;
+            m_wifi_signal_pct = 0;
+            m_wifi_signal_dbm = 0;
+            m_dirty = true;
+        }
+
+        if (active) {
+            std::unique_lock<std::mutex> lock(m_thread_mutex);
+            m_thread_cv.wait_for(lock, std::chrono::milliseconds(600), [this]() {
+                return !m_worker_running || !m_is_active;
+            });
+        }
+    }
+}
+
+void NetworkModule::measure_ping() {
+    std::string target = m_ping_target.empty() ? "1.1.1.1" : m_ping_target;
+    std::string cmd = "ping -c 2 -i 0.2 -W 1 " + target + " 2>/dev/null";
+
+    FILE* fp = popen(cmd.c_str(), "r");
+    bool success = false;
+    double rtt = 0.0;
+    double jitter = 0.0;
+    double loss = 0.0;
+    bool has_stats = false;
+    bool has_loss = false;
+
+    if (fp) {
+        char buf[256];
+        while (fgets(buf, sizeof(buf), fp)) {
+            const char* time_pos = strstr(buf, "time=");
+            if (time_pos) {
+                double single_rtt = 0.0;
+                if (sscanf(time_pos + 5, "%lf", &single_rtt) == 1) {
+                    rtt = single_rtt;
+                    success = true;
+                }
+            }
+            if (strstr(buf, "min/avg/max/mdev")) {
+                const char* eq = strchr(buf, '=');
+                if (eq) {
+                    double p_min = 0, p_avg = 0, p_max = 0, p_mdev = 0;
+                    if (sscanf(eq + 1, "%lf/%lf/%lf/%lf", &p_min, &p_avg, &p_max, &p_mdev) == 4) {
+                        rtt = p_avg;
+                        jitter = p_mdev;
+                        has_stats = true;
+                        success = true;
+                    }
+                }
+            }
+            const char* loss_pos = strstr(buf, "packet loss");
+            if (loss_pos) {
+                const char* pct = strchr(buf, '%');
+                if (pct) {
+                    const char* start = pct - 1;
+                    while (start > buf && *(start - 1) != ' ' && *(start - 1) != ',') start--;
+                    if (sscanf(start, "%lf", &loss) == 1) {
+                        has_loss = true;
+                    }
+                }
+            }
+        }
+        int rc = pclose(fp);
+        if (rc != 0 && !has_stats) {
+            success = false;
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(m_metrics_mutex);
+    m_ping_history.push_back({success, rtt});
+    if (m_ping_history.size() > 10) {
+        m_ping_history.pop_front();
+    }
+
+    if (success) {
+        m_ping = rtt;
+        if (has_stats) {
+            m_jitter = jitter;
+        } else {
+            std::vector<double> succ_rtts;
+            for (const auto& s : m_ping_history) {
+                if (s.success) succ_rtts.push_back(s.rtt);
+            }
+            if (succ_rtts.size() >= 2) {
+                double diff_sum = 0.0;
+                for (size_t i = 1; i < succ_rtts.size(); ++i) {
+                    diff_sum += std::abs(succ_rtts[i] - succ_rtts[i - 1]);
+                }
+                m_jitter = diff_sum / (succ_rtts.size() - 1);
+            }
+        }
+    }
+
+    if (has_loss) {
+        m_packet_loss = loss;
+    } else {
+        int lost = 0;
+        for (const auto& s : m_ping_history) {
+            if (!s.success) lost++;
+        }
+        m_packet_loss = m_ping_history.empty() ? 0.0 : (lost * 100.0) / m_ping_history.size();
+    }
+
+    m_has_ping_data = true;
+    m_dirty = true;
+}
+
+void NetworkModule::on_expanded() {
+    {
+        std::lock_guard<std::mutex> lock(m_thread_mutex);
+        m_is_active = true;
+    }
+    m_thread_cv.notify_all();
+}
+
+void NetworkModule::on_collapsed() {
+    {
+        std::lock_guard<std::mutex> lock(m_thread_mutex);
+        m_is_active = false;
+    }
+    m_thread_cv.notify_all();
+}
+
+void NetworkModule::get_preferred_dimensions(PangoFontDescription* font_desc, const Config& config, double& w, double& h) {
+    (void)font_desc;
+    (void)config;
+    w = 380.0;
+    h = 170.0;
+}
+
+std::string NetworkModule::format_speed(double bytes_per_sec) {
+    if (bytes_per_sec < 1024.0) {
+        return std::to_string(static_cast<int>(bytes_per_sec)) + " B/s";
+    } else if (bytes_per_sec < 1024.0 * 1024.0) {
+        std::stringstream ss;
+        ss << std::fixed << std::setprecision(bytes_per_sec < 102400.0 ? 1 : 0) << (bytes_per_sec / 1024.0) << " KB/s";
+        return ss.str();
+    } else {
+        std::stringstream ss;
+        ss << std::fixed << std::setprecision(1) << (bytes_per_sec / (1024.0 * 1024.0)) << " MB/s";
+        return ss.str();
+    }
+}
+
+double NetworkModule::get_ping() const {
+    std::lock_guard<std::mutex> lock(m_metrics_mutex);
+    return m_ping;
+}
+
+double NetworkModule::get_jitter() const {
+    std::lock_guard<std::mutex> lock(m_metrics_mutex);
+    return m_jitter;
+}
+
+double NetworkModule::get_packet_loss() const {
+    std::lock_guard<std::mutex> lock(m_metrics_mutex);
+    return m_packet_loss;
+}
+
+bool NetworkModule::has_ping_data() const {
+    std::lock_guard<std::mutex> lock(m_metrics_mutex);
+    return m_has_ping_data;
+}
+
+double NetworkModule::get_gateway_ping() const {
+    std::lock_guard<std::mutex> lock(m_metrics_mutex);
+    return m_gateway_ping;
+}
+
+double NetworkModule::get_download_speed() const {
+    std::lock_guard<std::mutex> lock(m_metrics_mutex);
+    return m_download_speed;
+}
+
+double NetworkModule::get_upload_speed() const {
+    std::lock_guard<std::mutex> lock(m_metrics_mutex);
+    return m_upload_speed;
+}
+
+int NetworkModule::get_wifi_signal() const {
+    std::lock_guard<std::mutex> lock(m_metrics_mutex);
+    return m_wifi_signal_pct;
+}
+
 void NetworkModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, const Config& config, int w, int h, std::vector<HitBox>& hitboxes) {
     PangoLayout* layout = pango_cairo_create_layout(cr);
-    pango_layout_set_font_description(layout, font_desc);
 
-    // Title
-    std::string title = (m_connected ? (m_is_wifi ? "󰖩 WiFi Connected" : "󰈀 Ethernet Connected") : "󰖪 Disconnected");
-    pango_layout_set_text(layout, title.c_str(), -1);
-    int tw, th;
-    pango_layout_get_pixel_size(layout, &tw, &th);
-    cairo_set_source_rgba(cr, m_connected ? config.colors.accent_blue.r : config.colors.danger.r,
-                              m_connected ? config.colors.accent_blue.g : config.colors.danger.g,
-                              m_connected ? config.colors.accent_blue.b : config.colors.danger.b, 1.0);
-    cairo_move_to(cr, (w - tw) / 2, 10);
-    pango_cairo_show_layout(cr, layout);
+    // Snapshot metrics under lock
+    double ping_val = 0.0;
+    double jitter_val = 0.0;
+    double loss_val = 0.0;
+    double gw_val = 0.0;
+    double dl_speed = 0.0;
+    double ul_speed = 0.0;
+    int wifi_sig = 0;
+    int wifi_dbm = 0;
+    bool has_data = false;
+    {
+        std::lock_guard<std::mutex> lock(m_metrics_mutex);
+        ping_val = m_ping;
+        jitter_val = m_jitter;
+        loss_val = m_packet_loss;
+        gw_val = m_gateway_ping;
+        dl_speed = m_download_speed;
+        ul_speed = m_upload_speed;
+        wifi_sig = m_wifi_signal_pct;
+        wifi_dbm = m_wifi_signal_dbm;
+        has_data = m_has_ping_data;
+    }
 
-    // SSID / Network Name
-    std::string net_str = "Network: " + (m_ssid.empty() ? "None" : m_ssid);
-    pango_layout_set_text(layout, net_str.c_str(), -1);
-    pango_layout_get_pixel_size(layout, &tw, &th);
-    cairo_set_source_rgba(cr, config.colors.text.r, config.colors.text.g, config.colors.text.b, 1.0);
-    cairo_move_to(cr, (w - tw) / 2, 30);
-    pango_cairo_show_layout(cr, layout);
+    // 1. Title Row: Left (SSID / Status), Right (Wi-Fi Signal Badge)
+    std::string title_left;
+    ColorRGBA title_left_col = config.colors.accent_blue;
+    if (m_connected) {
+        if (m_is_wifi) {
+            title_left = "󰖩 " + (m_ssid.empty() ? "Wi-Fi" : m_ssid);
+        } else {
+            title_left = "󰈀 Ethernet Terhubung";
+        }
+    } else {
+        title_left = "󰖪 Terputus";
+        title_left_col = config.colors.danger;
+    }
 
-    // IP Address & Interface
-    std::string ip_str = "IP: " + m_ip + " (" + (m_interface.empty() ? "wlan0" : m_interface) + ")";
-    pango_layout_set_text(layout, ip_str.c_str(), -1);
-    pango_layout_get_pixel_size(layout, &tw, &th);
-    cairo_set_source_rgba(cr, config.colors.subtext.r, config.colors.subtext.g, config.colors.subtext.b, 0.9);
-    cairo_move_to(cr, (w - tw) / 2, 50);
+    PangoFontDescription* title_desc = pango_font_description_copy(font_desc);
+    pango_font_description_set_size(title_desc, 10 * PANGO_SCALE);
+    pango_font_description_set_weight(title_desc, PANGO_WEIGHT_BOLD);
+    pango_layout_set_font_description(layout, title_desc);
+    pango_layout_set_width(layout, 220 * PANGO_SCALE);
+    pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
+    pango_layout_set_text(layout, title_left.c_str(), -1);
+    cairo_set_source_rgba(cr, title_left_col.r, title_left_col.g, title_left_col.b, 1.0);
+    cairo_move_to(cr, 16, 10);
     pango_cairo_show_layout(cr, layout);
+    pango_font_description_free(title_desc);
+
+    // Title Right: Signal strength badge (if Wi-Fi)
+    if (m_connected && m_is_wifi && wifi_sig > 0) {
+        PangoFontDescription* sig_desc = pango_font_description_copy(font_desc);
+        pango_font_description_set_size(sig_desc, 9 * PANGO_SCALE);
+        pango_font_description_set_weight(sig_desc, PANGO_WEIGHT_BOLD);
+        pango_layout_set_font_description(layout, sig_desc);
+        pango_layout_set_width(layout, -1);
+        pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_NONE);
+
+        std::string sig_text = "󰤨 " + std::to_string(wifi_sig) + "% (" + std::to_string(wifi_dbm) + " dBm)";
+        pango_layout_set_text(layout, sig_text.c_str(), -1);
+        int stw, sth;
+        pango_layout_get_pixel_size(layout, &stw, &sth);
+
+        ColorRGBA sig_col = (wifi_sig >= 70) ? config.colors.accent : ((wifi_sig >= 40) ? config.colors.warning : config.colors.danger);
+        cairo_set_source_rgba(cr, sig_col.r, sig_col.g, sig_col.b, 1.0);
+        cairo_move_to(cr, w - 16 - stw, 11);
+        pango_cairo_show_layout(cr, layout);
+        pango_font_description_free(sig_desc);
+    }
+
+    // 2. Subtitle Row: Left (Local IP & Interface), Right (Gateway IP)
+    PangoFontDescription* sub_desc = pango_font_description_copy(font_desc);
+    pango_font_description_set_size(sub_desc, 8.5 * PANGO_SCALE);
+    pango_layout_set_font_description(layout, sub_desc);
+
+    if (m_connected) {
+        std::string ip_left = "󰩟 " + m_ip + " (" + (m_interface.empty() ? "wlan0" : m_interface) + ")";
+        pango_layout_set_width(layout, 220 * PANGO_SCALE);
+        pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
+        pango_layout_set_text(layout, ip_left.c_str(), -1);
+        cairo_set_source_rgba(cr, config.colors.subtext.r, config.colors.subtext.g, config.colors.subtext.b, 0.9);
+        cairo_move_to(cr, 16, 30);
+        pango_cairo_show_layout(cr, layout);
+
+        if (!m_gateway_ip.empty()) {
+            std::string gw_right = "󰌘 GW: " + m_gateway_ip;
+            pango_layout_set_width(layout, -1);
+            pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_NONE);
+            pango_layout_set_text(layout, gw_right.c_str(), -1);
+            int gtw, gth;
+            pango_layout_get_pixel_size(layout, &gtw, &gth);
+            cairo_move_to(cr, w - 16 - gtw, 30);
+            pango_cairo_show_layout(cr, layout);
+        }
+    } else {
+        pango_layout_set_width(layout, (w - 32) * PANGO_SCALE);
+        pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
+        pango_layout_set_text(layout, "Tidak ada koneksi internet aktif", -1);
+        cairo_set_source_rgba(cr, config.colors.subtext.r, config.colors.subtext.g, config.colors.subtext.b, 0.9);
+        cairo_move_to(cr, 16, 30);
+        pango_cairo_show_layout(cr, layout);
+    }
+    pango_font_description_free(sub_desc);
+
+    pango_layout_set_width(layout, -1);
+    pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_NONE);
+
+    auto draw_rounded_rect = [&](double rx, double ry, double rw, double rh, double radius) {
+        cairo_new_sub_path(cr);
+        cairo_arc(cr, rx + radius, ry + radius, radius, M_PI, 3 * M_PI / 2);
+        cairo_arc(cr, rx + rw - radius, ry + radius, radius, -M_PI / 2, 0);
+        cairo_arc(cr, rx + rw - radius, ry + rh - radius, radius, 0, M_PI / 2);
+        cairo_arc(cr, rx + radius, ry + rh - radius, radius, M_PI / 2, M_PI);
+        cairo_close_path(cr);
+    };
+
+    struct CardInfo {
+        std::string label;
+        std::string value;
+        ColorRGBA color;
+    };
+
+    // Metric 1: Ping
+    std::string ping_str;
+    ColorRGBA ping_col;
+    if (!m_connected || !has_data) {
+        ping_str = m_connected ? "..." : "--";
+        ping_col = config.colors.subtext;
+    } else {
+        std::stringstream ss;
+        ss << std::fixed << std::setprecision(ping_val >= 100.0 ? 0 : 1) << ping_val << " ms";
+        ping_str = ss.str();
+        if (ping_val < 60.0) ping_col = config.colors.accent;
+        else if (ping_val < 150.0) ping_col = config.colors.warning;
+        else ping_col = config.colors.danger;
+    }
+
+    // Metric 2: Jitter
+    std::string jitter_str;
+    ColorRGBA jitter_col;
+    if (!m_connected || !has_data) {
+        jitter_str = m_connected ? "..." : "--";
+        jitter_col = config.colors.subtext;
+    } else {
+        std::stringstream ss;
+        ss << std::fixed << std::setprecision(1) << jitter_val << " ms";
+        jitter_str = ss.str();
+        if (jitter_val < 10.0) jitter_col = config.colors.accent;
+        else if (jitter_val < 30.0) jitter_col = config.colors.warning;
+        else jitter_col = config.colors.danger;
+    }
+
+    // Metric 3: Packet Loss
+    std::string loss_str;
+    ColorRGBA loss_col;
+    if (!m_connected) {
+        loss_str = "100%";
+        loss_col = config.colors.danger;
+    } else if (!has_data) {
+        loss_str = "...";
+        loss_col = config.colors.subtext;
+    } else {
+        std::stringstream ss;
+        ss << std::fixed << std::setprecision(loss_val == 0.0 ? 0 : 1) << loss_val << "%";
+        loss_str = ss.str();
+        if (loss_val == 0.0) loss_col = config.colors.accent;
+        else if (loss_val <= 5.0) loss_col = config.colors.warning;
+        else loss_col = config.colors.danger;
+    }
+
+    // Metric 4: Download Speed
+    std::string dl_str = m_connected ? format_speed(dl_speed) : "--";
+    ColorRGBA dl_col = config.colors.accent_blue;
+
+    // Metric 5: Upload Speed
+    std::string ul_str = m_connected ? format_speed(ul_speed) : "--";
+    ColorRGBA ul_col = config.colors.accent_purple;
+
+    // Metric 6: Gateway Ping
+    std::string gw_str;
+    ColorRGBA gw_col;
+    if (!m_connected || gw_val < 0.0) {
+        gw_str = "--";
+        gw_col = config.colors.danger;
+    } else if (gw_val == 0.0) {
+        gw_str = m_connected ? "..." : "--";
+        gw_col = config.colors.subtext;
+    } else {
+        std::stringstream ss;
+        ss << std::fixed << std::setprecision(1) << gw_val << " ms";
+        gw_str = ss.str();
+        if (gw_val < 10.0) gw_col = config.colors.accent;
+        else if (gw_val < 25.0) gw_col = config.colors.warning;
+        else gw_col = config.colors.danger;
+    }
+
+    std::vector<CardInfo> row1 = {
+        {"󰅒 PING", ping_str, ping_col},
+        {"󱥸 JITTER", jitter_str, jitter_col},
+        {"󰓧 LOSS", loss_str, loss_col}
+    };
+
+    std::vector<CardInfo> row2 = {
+        {"󰇚 DOWNLOAD", dl_str, dl_col},
+        {"󰕒 UPLOAD", ul_str, ul_col},
+        {"󰌘 GATEWAY", gw_str, gw_col}
+    };
+
+    int card_h = 42;
+    int pad_x = 16;
+    int gap = 8;
+    int total_card_w = w - (2 * pad_x) - (2 * gap);
+    int card_w = total_card_w / 3;
+
+    PangoFontDescription* label_desc = pango_font_description_copy(font_desc);
+    pango_font_description_set_size(label_desc, 8 * PANGO_SCALE);
+
+    PangoFontDescription* val_desc = pango_font_description_copy(font_desc);
+    pango_font_description_set_size(val_desc, 10.5 * PANGO_SCALE);
+    pango_font_description_set_weight(val_desc, PANGO_WEIGHT_BOLD);
+
+    auto render_card_row = [&](const std::vector<CardInfo>& row_cards, int row_y) {
+        for (size_t i = 0; i < row_cards.size(); ++i) {
+            int cur_x = pad_x + i * (card_w + gap);
+            int cur_w = (i == row_cards.size() - 1) ? (w - pad_x - cur_x) : card_w;
+
+            draw_rounded_rect(cur_x, row_y, cur_w, card_h, 8.0);
+            cairo_set_source_rgba(cr, config.colors.card_bg.r, config.colors.card_bg.g, config.colors.card_bg.b, 0.85);
+            cairo_fill_preserve(cr);
+            cairo_set_source_rgba(cr, config.colors.border.r, config.colors.border.g, config.colors.border.b, 0.45);
+            cairo_set_line_width(cr, 1.0);
+            cairo_stroke(cr);
+
+            pango_layout_set_font_description(layout, label_desc);
+            pango_layout_set_text(layout, row_cards[i].label.c_str(), -1);
+            int ltw, lth;
+            pango_layout_get_pixel_size(layout, &ltw, &lth);
+            cairo_set_source_rgba(cr, config.colors.subtext.r, config.colors.subtext.g, config.colors.subtext.b, 0.85);
+            cairo_move_to(cr, cur_x + (cur_w - ltw) / 2, row_y + 4);
+            pango_cairo_show_layout(cr, layout);
+
+            pango_layout_set_font_description(layout, val_desc);
+            pango_layout_set_text(layout, row_cards[i].value.c_str(), -1);
+            int vtw, vth;
+            pango_layout_get_pixel_size(layout, &vtw, &vth);
+            cairo_set_source_rgba(cr, row_cards[i].color.r, row_cards[i].color.g, row_cards[i].color.b, 1.0);
+            cairo_move_to(cr, cur_x + (cur_w - vtw) / 2, row_y + 19);
+            pango_cairo_show_layout(cr, layout);
+        }
+    };
+
+    render_card_row(row1, 52);
+    render_card_row(row2, 100);
+
+    pango_font_description_free(label_desc);
+    pango_font_description_free(val_desc);
+
+    // 4. Subtle footer target info (No truncation)
+    PangoFontDescription* footer_desc = pango_font_description_copy(font_desc);
+    pango_font_description_set_size(footer_desc, 8 * PANGO_SCALE);
+    pango_layout_set_font_description(layout, footer_desc);
+    std::string footer_str = "● Target: " + (m_ping_target.empty() ? "1.1.1.1" : m_ping_target) + " (Cloudflare) • Real-Time";
+    pango_layout_set_text(layout, footer_str.c_str(), -1);
+    int ftw, fth;
+    pango_layout_get_pixel_size(layout, &ftw, &fth);
+    cairo_set_source_rgba(cr, config.colors.subtext.r, config.colors.subtext.g, config.colors.subtext.b, 0.6);
+    cairo_move_to(cr, (w - ftw) / 2, 149);
+    pango_cairo_show_layout(cr, layout);
+    pango_font_description_free(footer_desc);
 
     g_object_unref(layout);
 
