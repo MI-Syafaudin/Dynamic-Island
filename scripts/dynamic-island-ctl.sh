@@ -41,8 +41,14 @@ case "$cmd" in
     timer)
         $BIN timer "$@"
         ;;
+    dark)
+        $BIN dark "$@"
+        ;;
+    night|eye|eye-comfort)
+        $BIN night "$@"
+        ;;
     *)
-        echo "Usage: $0 {toggle|collapse|expand <mode>|volume <val>|brightness <val>|media <act>|screenshot <mode>|notify <app> <msg>|battery <args>|alarm <args>|timer <args>|reload|quit}"
+        echo "Usage: $0 {toggle|collapse|expand <mode>|volume <val>|brightness <val>|media <act>|screenshot <mode>|notify <app> <msg>|battery <args>|alarm <args>|timer <args>|dark [on|off]|night [on|off]|eye [on|off]|reload|quit}"
         exit 1
         ;;
 esac

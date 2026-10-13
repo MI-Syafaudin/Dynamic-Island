@@ -257,7 +257,7 @@ void App::setup_callbacks() {
         if (m_ws_mod) {
             m_ws_mod->set_active_workspace(ws);
             m_idle_width_dirty = true;
-            update_idle_dimensions(true);
+            update_idle_dimensions(false);
         }
     });
 
@@ -265,7 +265,7 @@ void App::setup_callbacks() {
         if (m_win_mod) {
             m_win_mod->set_active_window(cls, title);
             m_idle_width_dirty = true;
-            update_idle_dimensions(true);
+            update_idle_dimensions(false);
         }
     });
 
@@ -312,15 +312,17 @@ void App::update_idle_dimensions(bool animate) {
             m_animating = true;
             m_anim_start = std::chrono::steady_clock::now();
             m_wayland.request_frame_callback();
+            return;
         } else {
+            m_animating = false;
             m_curr_w = needed_w;
             m_target_w = needed_w;
             m_curr_h = m_config.idle_height;
             m_target_h = m_config.idle_height;
             m_wayland.resize(static_cast<int>(m_curr_w), static_cast<int>(m_curr_h));
-            render_current_state();
         }
     }
+    render_current_state();
 }
 
 void App::get_target_dimensions(IslandMode mode, double& w, double& h) {
@@ -383,8 +385,12 @@ void App::get_target_dimensions(IslandMode mode, double& w, double& h) {
             }
             break;
         case IslandMode::Expanded_QuickActions:
-            w = 340.0;
-            h = 76.0;
+            if (m_quick_mod) {
+                m_quick_mod->get_preferred_dimensions(m_renderer.get_font_desc(), m_config, w, h);
+            } else {
+                w = 540.0;
+                h = 76.0;
+            }
             break;
         default:
             w = m_config.idle_width;
@@ -441,7 +447,7 @@ void App::expand_to(IslandMode mode, int timeout_ms) {
         query_brightness();
     }
     if (mode == IslandMode::Expanded_QuickActions && m_quick_mod) {
-        m_quick_mod->update();
+        m_quick_mod->update_async();
     }
     if (mode == IslandMode::Expanded_Network && m_net_mod) {
         m_net_mod->on_expanded();
@@ -719,7 +725,6 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
             return "OK";
         }
         if (m_mode == IslandMode::Idle) {
-            if (m_quick_mod) m_quick_mod->update();
             expand_to(IslandMode::Expanded_QuickActions, 0);
         } else {
             collapse();
@@ -788,7 +793,6 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
                 if (m_mode == IslandMode::Expanded_QuickActions) {
                     collapse();
                 } else {
-                    if (m_quick_mod) m_quick_mod->update();
                     expand_to(IslandMode::Expanded_QuickActions, 0);
                 }
             }
@@ -1027,6 +1031,37 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
         }
         return handle_ipc_command("alarm", in_args);
     }
+    if (cmd == "dark") {
+        if (m_quick_mod) {
+            std::string sub = args.empty() ? "toggle" : args[0];
+            if (sub == "on" || sub == "true" || sub == "1") {
+                m_quick_mod->set_dark_mode(true);
+            } else if (sub == "off" || sub == "false" || sub == "0") {
+                m_quick_mod->set_dark_mode(false);
+            } else {
+                m_quick_mod->handle_click("qa_dark", "");
+            }
+            render_current_state();
+            return m_quick_mod->is_dark_active() ? "Dark mode: ON\n" : "Dark mode: OFF\n";
+        }
+        return "QuickAction module not available\n";
+    }
+    if (cmd == "night" || cmd == "eye" || cmd == "eye-comfort" || cmd == "eye_comfort") {
+        if (m_quick_mod) {
+            std::string sub = args.empty() ? "toggle" : args[0];
+            if (sub == "on") {
+                if (!m_quick_mod->is_night_active()) m_quick_mod->handle_click("qa_night", "");
+            } else if (sub == "off") {
+                if (m_quick_mod->is_night_active()) m_quick_mod->handle_click("qa_night", "");
+            } else {
+                m_quick_mod->handle_click("qa_night", "");
+            }
+            m_quick_mod->update();
+            render_current_state();
+            return m_quick_mod->is_night_active() ? "Eye comfort: ON\n" : "Eye comfort: OFF\n";
+        }
+        return "QuickAction module not available\n";
+    }
     if (cmd == "ping") {
         return "pong";
     }
@@ -1137,6 +1172,12 @@ void App::run() {
         }
 
         m_wayland.dispatch_pending();
+
+        // If animating and poll timed out without Wayland events (e.g. empty workspace with VFR),
+        // drive the frame directly so animation never hangs or stutters
+        if (ret == 0 && m_animating) {
+            handle_frame();
+        }
 
         auto now = std::chrono::steady_clock::now();
 
@@ -1254,7 +1295,7 @@ void App::run() {
                     render_current_state();
                 } else if (m_mode == IslandMode::Idle && changed) {
                     m_idle_width_dirty = true;
-                    update_idle_dimensions(true);
+                    update_idle_dimensions(false);
                 }
             }
         }
@@ -1317,12 +1358,12 @@ void App::run() {
                 }
             }
 
-            if (m_quick_mod && m_mode == IslandMode::Expanded_QuickActions) m_quick_mod->update();
+            if (m_quick_mod && m_mode == IslandMode::Expanded_QuickActions) m_quick_mod->update_async();
             if (m_mode == IslandMode::Expanded_Brightness) query_brightness();
 
             if (m_mode == IslandMode::Idle && slow_changed) {
                 m_idle_width_dirty = true;
-                update_idle_dimensions(true);
+                update_idle_dimensions(false);
             } else if (m_mode == IslandMode::Expanded_QuickActions || m_mode == IslandMode::Expanded_Audio || m_mode == IslandMode::Expanded_Brightness) {
                 render_current_state();
             }

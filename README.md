@@ -49,7 +49,7 @@ Proyek ini dibangun dari awal dengan fokus utama pada **efisiensi ekstrem**, **k
 | **9. System Monitor** | **Metrik Lengkap 4 Baris & Halus**: Menampilkan CPU %, RAM %, **ZRAM / Swap RAM %**, dan GPU % (Radeon Vega 3 / AMD / Intel / NVIDIA) secara konsisten dan realtime (update berkala 1.5s di compact dan expanded view) dengan filter EMA dan GPU multi-sampling. Otomatis mendeteksi perangkat ZRAM (`󰾴 ZRAM`) maupun swap disk (`󰾴 SWAP`). | Klik untuk ekspansi: 4 bar visual horizontal (CPU aksen hijau, RAM aksen biru, ZRAM/Swap aksen ungu, GPU aksen kuning) + Temperatur CPU (°C) & detail penggunaan memori fisik serta swap (GB). |
 | **10. Screenshot Tool** | Terintegrasi dengan `grim` + `slurp` + `wl-copy`. | Simpan otomatis ke `~/Pictures/Screenshots/`, salin ke clipboard, dan memunculkan banner "📸 Screenshot Captured!". |
 | **11. Notifications** | Banner notifikasi mandiri tanpa daemon berat. | Menerima notifikasi via `dynamic-island notify "App" "Message"` dan otomatis collapse setelah 4.5 detik. |
-| **12. Quick Controls** | **Panel Kontrol Cepat Modern dengan Indikator Aktif**: Header *"Quick Controls"* di posisi tengah (*centered*). Dilengkapi **indikator status aktif** berbasis sistem riil untuk WiFi, Bluetooth, Mute, dan Night Light. Kontrol **Night Light** kini terintegrasi baik dengan `hyprsunset`/`wlsunset`/`gammastep` maupun shader native Hyprland (`nightmode.frag`). Tombol **Power / Shutdown** kini menyajikan dialog/menu daya interaktif (`wlogout`/`rofi`/`wofi`/`systemctl`) sehingga dapat mematikan (*shutdown*), restart, maupun sleep dengan aman. | Tombol yang aktif memiliki latar warna aksen dinamis (`accent_blue`, `danger`, `warning`), batas sorotan (*highlight border*), titik indikator (*active dot*), dan ikon/label berganti dinamis (misal `󰖩`/`󰖪`, `󰂯`/`󰂲`, `󰖁 Muted`/`󰕾 Mute`). Respon klik instan tanpa delay. |
+| **12. Quick Controls** | **Panel Kontrol Cepat Modern dengan Indikator Aktif**: Header *"Quick Controls"* di posisi tengah (*centered*). Dilengkapi **indikator status aktif** berbasis sistem riil untuk WiFi, Bluetooth, Mute, Dark Mode, dan Eye Comfort. Kontrol **Eye Comfort** (dengan logo mata `󰈈`/`󰈉`) terintegrasi dengan filter temperatur layar hangat 4500K (`hyprsunset`/`wlsunset`/`gammastep` maupun shader native `nightmode.frag`). Tombol **Power / Shutdown** menyajikan dialog/menu daya interaktif (`wlogout`/`rofi`/`wofi`/`systemctl`) sehingga dapat mematikan (*shutdown*), restart, maupun sleep dengan aman. | Tombol yang aktif memiliki latar warna aksen dinamis (`accent_blue`, `danger`, `warning`), batas sorotan (*highlight border*), titik indikator (*active dot*), dan ikon/label berganti dinamis (misal `󰖩`/`󰖪`, `󰂯`/`󰂲`, `󰖁 Muted`/`󰕾 Mute`, `󰈈`/`󰈉 Eye Comfort`). Respon klik instan tanpa delay. |
 | **13. Alarm & Timer** | **Alarm Jam Dinding & Timer Fleksibel**: Pengingat alarm (`HH:MM`) dan countdown timer presisi tinggi dengan **0 overhead RAM tambahan (<1 KB)**. Dilengkapi persistensi otomatis ke `~/.config/dynamic-island/alarms.json`, visual alarm berdering (`Expanded_Alarm`) dengan animasi pill, audio nada dering terintegrasi PipeWire (`pw-play` / `paplay` / `canberra`), serta tombol interaktif `[󰅖 Matikan]` dan `[󰒲 Tunda 5m]`. | Pada ekspansi jam, tersedia status alarm dan tombol *quick timer* sekali klik `[+1m] [+5m] [+10m] [+15m] [+30m]`, serta tombol `[󰅖 Batal]`. Pada mode berdering, klik bodi atau tombol untuk matikan/snooze instan. |
 
 ---
@@ -185,7 +185,7 @@ dynamic-island reload
   - Klik Lagu: Buka kontrol pemutar media.
   - Klik Tombol Media `[⏮ ⏯ ⏭]`: Kontrol musik via MPRIS.
   - Klik *Slider Bar* (Volume / Brightness): Mengatur level persentase volume atau kecerahan layar secara instan.
-  - Klik Tombol Quick Action: Toggle WiFi, Bluetooth, Night Light, Mute, Screenshot, Power dengan indikator visual aktif yang jelas.
+  - Klik Tombol Quick Action: Toggle WiFi, Bluetooth, Mute, Dark Mode, Eye Comfort, Screenshot, Power dengan indikator visual aktif yang jelas.
   - Klik di luar tombol saat ekspansi: Otomatis collapse kembali ke idle.
 - **Right Click**: Membuka / menutup panel Quick Controls.
 - **Scroll Wheel**: Mengatur volume naik/turun (atau kecerahan layar saat mode brightness aktif) dengan step 5%.
@@ -199,6 +199,8 @@ dynamic-island reload
 | `SUPER + S` | Buka System Monitor (CPU, RAM, ZRAM/Swap, GPU Vega 3, Temp) |
 | `SUPER + C` | Buka Kalender & Waktu Lengkap |
 | `SUPER + N` | Buka Status Jaringan |
+| `SUPER + Shift + D` | Toggle Dark Mode (Sinkron Browser & GTK) |
+| `SUPER + Shift + N` | Toggle Eye Comfort (Filter Layar Hangat) |
 | `Print` | Ambil screenshot layar penuh |
 | `Shift + Print` | Ambil screenshot area pilihan (`slurp`) |
 | `Tombol Volume (+/-)` | Naik/turun volume audio (otomatis popup island) |
@@ -217,6 +219,17 @@ dynamic-island toggle
 
 # Force collapse ke mode pill normal
 dynamic-island collapse
+
+# Toggle Dark Mode (terdeteksi langsung oleh Browser & Desktop GTK)
+dynamic-island dark
+dynamic-island dark on
+dynamic-island dark off
+
+# Toggle Eye Comfort (Filter layar hangat Hyprland / hyprsunset)
+dynamic-island eye
+dynamic-island eye on
+dynamic-island eye off
+# (Alias: dynamic-island night)
 
 # Buka modul tertentu
 dynamic-island expand system

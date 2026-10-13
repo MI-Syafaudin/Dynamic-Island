@@ -61,6 +61,7 @@ clean:
 install: $(BIN)
 	install -d $(DESTDIR)/usr/local/bin
 	install -m 755 $(BIN) $(DESTDIR)/usr/local/bin/dynamic-island
+	install -m 755 scripts/sync_dark_mode.sh $(DESTDIR)/usr/local/bin/dynamic-island-sync-dark
 	install -d $(DESTDIR)/etc/xdg/dynamic-island
 	install -m 644 config/config.json $(DESTDIR)/etc/xdg/dynamic-island/config.json
 
@@ -68,7 +69,10 @@ user-install: $(BIN)
 	install -d $(HOME)/.local/bin
 	install -m 755 $(BIN) $(HOME)/.local/bin/dynamic-island
 	install -m 755 scripts/power_menu.sh $(HOME)/.local/bin/dynamic-island-powermenu
+	install -m 755 scripts/sync_dark_mode.sh $(HOME)/.local/bin/dynamic-island-sync-dark
 	install -d $(HOME)/.config/dynamic-island
+	install -d $(HOME)/.config/dynamic-island/scripts
+	install -m 755 scripts/sync_dark_mode.sh $(HOME)/.config/dynamic-island/scripts/sync_dark_mode.sh
 	install -d $(HOME)/.config/dynamic-island/shaders
 	install -m 644 config/config.json $(HOME)/.config/dynamic-island/config.json
 	install -m 644 shaders/nightmode.frag $(HOME)/.config/dynamic-island/shaders/nightmode.frag
