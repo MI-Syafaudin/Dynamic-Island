@@ -35,6 +35,7 @@ static void print_help(const char* prog) {
               << "  " << prog << " notify <app> <msg>  Show notification banner on island\n"
               << "  " << prog << " battery             Show battery status\n"
               << "  " << prog << " battery test [lvl]  Test critical battery alarm (e.g. battery test 5)\n"
+              << "  " << prog << " battery test-charging Test battery charging notification\n"
               << "  " << prog << " battery dismiss     Dismiss ringing battery alarm\n"
               << "  " << prog << " battery snooze [m]  Snooze battery alarm (default 5m)\n"
               << "  " << prog << " alarm [set] <HH:MM> [lbl] Set alarm at HH:MM (e.g. alarm 07:30)\n"

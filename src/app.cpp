@@ -127,6 +127,39 @@ void App::snooze_battery_alarm(int minutes) {
     collapse();
 }
 
+void App::trigger_charging_notification() {
+    if (!m_bat_mod) return;
+
+    int pct = m_bat_mod->get_percentage();
+    std::string title = (pct >= 95) ? "Baterai Terisi Penuh" : "Pengisian Daya Aktif";
+    std::string msg = "Pengisi daya terhubung. Baterai: " + std::to_string(pct) + "%";
+
+    // 1. Non-blocking desktop notification via notify-send
+    pid_t b_pid = fork();
+    if (b_pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        execlp("notify-send", "notify-send", "-u", "normal", "-i", "battery-charging",
+               title.c_str(), msg.c_str(), (char*)nullptr);
+        _exit(0);
+    }
+
+    // 2. Dismiss any low-battery alarm state
+    if (m_bat_mod->is_alarm_active()) {
+        m_bat_mod->dismiss_alarm();
+    }
+
+    // 3. Dynamic Island charging banner with chime (3500ms timeout)
+    if (m_mode != IslandMode::Expanded_Alarm) {
+        expand_to(IslandMode::Expanded_BatteryAlert, 3500);
+        play_ting_sound();
+    }
+}
+
 bool App::init(const std::string& config_path) {
     if (!config_path.empty()) {
         m_config.load_from_file(config_path);
@@ -469,6 +502,12 @@ void App::collapse() {
 
     if (m_net_mod) {
         m_net_mod->on_collapsed();
+    }
+
+    if (m_mode == IslandMode::Expanded_BatteryAlert && m_bat_mod) {
+        if (!m_bat_mod->is_alarm_active()) {
+            m_bat_mod->dismiss_alarm();
+        }
     }
 
     m_mode = IslandMode::Idle;
@@ -885,6 +924,10 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
             }
             return "Battery module not available\n";
         }
+        if (sub == "charging" || sub == "test-charging") {
+            trigger_charging_notification();
+            return "Battery charging notification triggered\n";
+        }
 
         if (!m_bat_mod || !m_bat_mod->is_available()) {
             return "Battery not available\n";
@@ -1244,7 +1287,7 @@ void App::run() {
                 if (m_mode == IslandMode::Expanded_BatteryAlert) {
                     if (m_bat_mod) {
                         m_bat_mod->update();
-                        if (m_bat_mod->is_charging()) {
+                        if (m_bat_mod->is_charging() && m_bat_mod->is_alarm_active()) {
                             dismiss_battery_alarm();
                         }
                     }
@@ -1261,6 +1304,45 @@ void App::run() {
                 if (has_timer != last_had_timer) {
                     last_had_timer = has_timer;
                     m_idle_width_dirty = true;
+                }
+            }
+
+            if (m_bat_mod) {
+                int old_pct = m_bat_mod->get_percentage();
+                bool old_chg = m_bat_mod->is_charging();
+                m_bat_mod->update();
+                if (old_pct != m_bat_mod->get_percentage() || old_chg != m_bat_mod->is_charging()) {
+                    m_idle_width_dirty = true;
+                    if (m_mode == IslandMode::Idle || m_mode == IslandMode::Expanded_BatteryAlert) {
+                        render_current_state();
+                    }
+                }
+
+                if (m_bat_mod->check_charging_started()) {
+                    trigger_charging_notification();
+                }
+
+                // Check critical battery alert
+                int crit_lvl = 0;
+                std::string crit_msg;
+                if (m_bat_mod->check_critical_alert(crit_lvl, crit_msg)) {
+                    // Non-blocking desktop notification
+                    pid_t b_pid = fork();
+                    if (b_pid == 0) {
+                        int devnull = open("/dev/null", O_WRONLY);
+                        if (devnull >= 0) {
+                            dup2(devnull, STDOUT_FILENO);
+                            dup2(devnull, STDERR_FILENO);
+                            close(devnull);
+                        }
+                        execlp("notify-send", "notify-send", "-u", "critical", "-i", "battery-caution",
+                               "Peringatan Baterai", crit_msg.c_str(), (char*)nullptr);
+                        _exit(0);
+                    }
+
+                    // Low & Critical battery alert: Dedicated banner with "ting" sound (6s timeout)
+                    expand_to(IslandMode::Expanded_BatteryAlert, 6000);
+                    play_ting_sound();
                 }
             }
 
@@ -1313,47 +1395,11 @@ void App::run() {
             }
         }
 
-        // Periodic Slow update: Battery, Network, Audio, Quick Controls (every 5s)
+        // Periodic Slow update: Network, Audio, Quick Controls (every 5s)
         if (std::chrono::duration_cast<std::chrono::seconds>(now - m_last_slow_update).count() >= 5) {
             m_last_slow_update = now;
             bool slow_changed = false;
 
-            if (m_bat_mod) {
-                int old_pct = m_bat_mod->get_percentage();
-                bool old_chg = m_bat_mod->is_charging();
-                m_bat_mod->update();
-                if (old_pct != m_bat_mod->get_percentage() || old_chg != m_bat_mod->is_charging()) {
-                    slow_changed = true;
-                }
-
-                // If battery alert is active and charger is plugged in, auto-dismiss
-                if (m_mode == IslandMode::Expanded_BatteryAlert && m_bat_mod->is_charging()) {
-                    dismiss_battery_alarm();
-                }
-
-                // Check critical battery alert (0% extra CPU/RAM overhead)
-                int crit_lvl = 0;
-                std::string crit_msg;
-                if (m_bat_mod->check_critical_alert(crit_lvl, crit_msg)) {
-                    // Non-blocking desktop notification
-                    pid_t b_pid = fork();
-                    if (b_pid == 0) {
-                        int devnull = open("/dev/null", O_WRONLY);
-                        if (devnull >= 0) {
-                            dup2(devnull, STDOUT_FILENO);
-                            dup2(devnull, STDERR_FILENO);
-                            close(devnull);
-                        }
-                        execlp("notify-send", "notify-send", "-u", "critical", "-i", "battery-caution",
-                               "Peringatan Baterai", crit_msg.c_str(), (char*)nullptr);
-                        _exit(0);
-                    }
-
-                    // Low & Critical battery alert: Dedicated banner with "ting" sound (6s timeout)
-                    expand_to(IslandMode::Expanded_BatteryAlert, 6000);
-                    play_ting_sound();
-                }
-            }
             if (m_net_mod) {
                 bool old_conn = m_net_mod->is_connected();
                 std::string old_ssid = m_net_mod->get_ssid();

@@ -6,6 +6,12 @@
 
 namespace di {
 
+struct BatteryStatusInfo {
+    std::string title;
+    std::string subtitle;
+    ColorRGBA color;
+};
+
 class BatteryModule : public ModuleBase {
 public:
     BatteryModule();
@@ -19,8 +25,11 @@ public:
     bool is_charging() const { return m_charging; }
     bool is_available() const { return m_available; }
 
+    BatteryStatusInfo get_status_info(const Config& config, int display_pct, bool charging) const;
+
     // Critical battery detection (returns true if a critical notification should trigger)
     bool check_critical_alert(int& out_level, std::string& out_msg);
+    bool check_charging_started();
 
     // Alarm controls
     bool is_alarm_active() const { return m_alarm_active; }
@@ -33,6 +42,8 @@ private:
     std::string m_bat_path;
     int m_percentage = 100;
     bool m_charging = false;
+    bool m_was_charging = false;
+    bool m_first_charging_check = true;
     bool m_available = false;
 
     // Critical notification state tracking

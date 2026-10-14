@@ -46,6 +46,7 @@ public:
     void snooze_alarm(int minutes = 5);
     void dismiss_battery_alarm();
     void snooze_battery_alarm(int minutes = 5);
+    void trigger_charging_notification();
 
 private:
     bool m_running = false;

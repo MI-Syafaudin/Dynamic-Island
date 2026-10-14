@@ -10,6 +10,8 @@ namespace di {
 BatteryModule::BatteryModule() {
     detect_battery_path();
     read_battery_sysfs();
+    m_was_charging = m_charging;
+    m_first_charging_check = false;
 }
 
 void BatteryModule::detect_battery_path() {
@@ -48,11 +50,15 @@ void BatteryModule::read_battery_sysfs() {
         fclose(status_file);
     }
 
-    // Auto-clear alarm and reset snooze when charging
+    // Auto-clear alarm and reset snooze when charging or when battery level is above critical
     if (m_charging) {
         m_alarm_active = false;
         m_is_snoozed = false;
         m_last_notified_tier = 0;
+        m_alert_level = 0;
+    } else if (m_percentage > 20 && !m_test_mode) {
+        m_alarm_active = false;
+        m_is_snoozed = false;
         m_alert_level = 0;
     }
 }
@@ -86,6 +92,47 @@ void BatteryModule::trigger_test_alert(int level) {
     m_is_snoozed = false;
 }
 
+BatteryStatusInfo BatteryModule::get_status_info(const Config& config, int display_pct, bool charging) const {
+    BatteryStatusInfo info;
+    if (charging) {
+        if (display_pct >= 95) {
+            info.title = "󰂄 Baterai Terisi Penuh";
+            info.subtitle = "Tersisa " + std::to_string(display_pct) + "% • Terhubung ke pengisi daya";
+        } else {
+            info.title = "󰂄 Pengisian Daya Aktif";
+            info.subtitle = "Tersisa " + std::to_string(display_pct) + "% • Baterai sedang diisi";
+        }
+        info.color = config.colors.accent;
+    } else {
+        if (display_pct <= 5) {
+            info.title = "󰂃 Baterai Sangat Kritis!";
+            info.subtitle = "Tersisa " + std::to_string(display_pct) + "% • Hubungkan pengisi daya sekarang!";
+            info.color = config.colors.danger;
+        } else if (display_pct <= 10) {
+            info.title = "󰂃 Baterai Kritis!";
+            info.subtitle = "Tersisa " + std::to_string(display_pct) + "% • Segera hubungkan pengisi daya";
+            info.color = config.colors.danger;
+        } else if (display_pct <= 20) {
+            info.title = "󰁺 Baterai Lemah!";
+            info.subtitle = "Tersisa " + std::to_string(display_pct) + "% • Hubungkan pengisi daya";
+            info.color = config.colors.warning;
+        } else if (display_pct < 50) {
+            info.title = "󰁼 Baterai Cukup";
+            info.subtitle = "Tersisa " + std::to_string(display_pct) + "% • Menggunakan daya baterai";
+            info.color = config.colors.text;
+        } else if (display_pct < 90) {
+            info.title = "󰂁 Baterai Baik";
+            info.subtitle = "Tersisa " + std::to_string(display_pct) + "% • Menggunakan daya baterai";
+            info.color = config.colors.text;
+        } else {
+            info.title = "󰁹 Baterai Optimal";
+            info.subtitle = "Tersisa " + std::to_string(display_pct) + "% • Daya baterai optimal";
+            info.color = config.colors.accent;
+        }
+    }
+    return info;
+}
+
 void BatteryModule::get_preferred_dimensions(PangoFontDescription* font_desc, const Config& config, double& w, double& h) {
     bool free_desc = false;
     if (!font_desc) {
@@ -98,31 +145,14 @@ void BatteryModule::get_preferred_dimensions(PangoFontDescription* font_desc, co
     cairo_t* cr = cairo_create(surface);
     PangoLayout* layout = pango_cairo_create_layout(cr);
 
-    int display_pct = (m_alert_level > 0) ? m_alert_level : m_percentage;
-
-    std::string title;
-    if (m_charging) {
-        title = "󰂄 Pengisian Daya Aktif";
-    } else if (display_pct <= 5) {
-        title = "󰂃 Baterai Sangat Kritis!";
-    } else if (display_pct <= 10) {
-        title = "󰂃 Baterai Kritis!";
-    } else {
-        title = "󰁺 Baterai Lemah!";
-    }
-
-    std::string sub;
-    if (m_charging) {
-        sub = "Tersisa " + std::to_string(display_pct) + "% • Baterai sedang diisi";
-    } else {
-        sub = "Tersisa " + std::to_string(display_pct) + "% • Hubungkan pengisi daya";
-    }
+    int display_pct = (m_alert_level > 0 && (m_alarm_active || m_test_mode)) ? m_alert_level : m_percentage;
+    BatteryStatusInfo info = get_status_info(config, display_pct, m_charging);
 
     // 1. Measure Title (Bold)
     PangoFontDescription* bold_desc = pango_font_description_copy(font_desc);
     pango_font_description_set_weight(bold_desc, PANGO_WEIGHT_BOLD);
     pango_layout_set_font_description(layout, bold_desc);
-    pango_layout_set_text(layout, title.c_str(), -1);
+    pango_layout_set_text(layout, info.title.c_str(), -1);
     pango_layout_set_width(layout, -1);
     int hw = 0, hh = 0;
     pango_layout_get_pixel_size(layout, &hw, &hh);
@@ -130,7 +160,7 @@ void BatteryModule::get_preferred_dimensions(PangoFontDescription* font_desc, co
 
     // 2. Measure Subtitle
     pango_layout_set_font_description(layout, font_desc);
-    pango_layout_set_text(layout, sub.c_str(), -1);
+    pango_layout_set_text(layout, info.subtitle.c_str(), -1);
     pango_layout_set_width(layout, -1);
     int sw = 0, sh = 0;
     pango_layout_get_pixel_size(layout, &sw, &sh);
@@ -159,8 +189,8 @@ void BatteryModule::draw_compact(cairo_t* cr, PangoFontDescription* font_desc, c
         if (m_percentage >= 90) icon = "󰁹";
         else if (m_percentage >= 70) icon = "󰂁";
         else if (m_percentage >= 50) icon = "󰁾";
-        else if (m_percentage >= 30) icon = "󰁼";
-        else if (m_percentage >= 15) icon = "󰁺";
+        else if (m_percentage >= 21) icon = "󰁼";
+        else if (m_percentage >= 11) icon = "󰁺";
         else icon = "󰂃";
     }
 
@@ -175,8 +205,10 @@ void BatteryModule::draw_compact(cairo_t* cr, PangoFontDescription* font_desc, c
 
     if (m_charging) {
         cairo_set_source_rgba(cr, config.colors.accent.r, config.colors.accent.g, config.colors.accent.b, 1.0);
-    } else if (m_alarm_active || m_percentage <= 20) {
+    } else if (m_alarm_active || m_percentage <= 10) {
         cairo_set_source_rgba(cr, config.colors.danger.r, config.colors.danger.g, config.colors.danger.b, 1.0);
+    } else if (m_percentage <= 20) {
+        cairo_set_source_rgba(cr, config.colors.warning.r, config.colors.warning.g, config.colors.warning.b, 1.0);
     } else {
         cairo_set_source_rgba(cr, config.colors.text.r, config.colors.text.g, config.colors.text.b, 0.9);
     }
@@ -193,31 +225,14 @@ void BatteryModule::draw_compact(cairo_t* cr, PangoFontDescription* font_desc, c
 void BatteryModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, const Config& config, int w, int h, std::vector<HitBox>& hitboxes) {
     PangoLayout* layout = pango_cairo_create_layout(cr);
 
-    int display_pct = (m_alert_level > 0) ? m_alert_level : m_percentage;
-
-    std::string title;
-    if (m_charging) {
-        title = "󰂄 Pengisian Daya Aktif";
-    } else if (display_pct <= 5) {
-        title = "󰂃 Baterai Sangat Kritis!";
-    } else if (display_pct <= 10) {
-        title = "󰂃 Baterai Kritis!";
-    } else {
-        title = "󰁺 Baterai Lemah!";
-    }
-
-    std::string sub;
-    if (m_charging) {
-        sub = "Tersisa " + std::to_string(display_pct) + "% • Baterai sedang diisi";
-    } else {
-        sub = "Tersisa " + std::to_string(display_pct) + "% • Hubungkan pengisi daya";
-    }
+    int display_pct = (m_alert_level > 0 && (m_alarm_active || m_test_mode)) ? m_alert_level : m_percentage;
+    BatteryStatusInfo info = get_status_info(config, display_pct, m_charging);
 
     // 1. Title Layout (Bold, Centered)
     PangoFontDescription* bold_desc = pango_font_description_copy(font_desc);
     pango_font_description_set_weight(bold_desc, PANGO_WEIGHT_BOLD);
     pango_layout_set_font_description(layout, bold_desc);
-    pango_layout_set_text(layout, title.c_str(), -1);
+    pango_layout_set_text(layout, info.title.c_str(), -1);
     pango_layout_set_width(layout, (w - 48) * PANGO_SCALE);
     pango_layout_set_alignment(layout, PANGO_ALIGN_CENTER);
     pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_NONE);
@@ -227,7 +242,7 @@ void BatteryModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, 
 
     // 2. Subtitle Layout (Centered, Wrapped)
     pango_layout_set_font_description(layout, font_desc);
-    pango_layout_set_text(layout, sub.c_str(), -1);
+    pango_layout_set_text(layout, info.subtitle.c_str(), -1);
     pango_layout_set_width(layout, (w - 48) * PANGO_SCALE);
     pango_layout_set_alignment(layout, PANGO_ALIGN_CENTER);
     pango_layout_set_wrap(layout, PANGO_WRAP_WORD_CHAR);
@@ -242,26 +257,22 @@ void BatteryModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, 
 
     // Draw Title
     pango_layout_set_font_description(layout, bold_desc);
-    pango_layout_set_text(layout, title.c_str(), -1);
+    pango_layout_set_text(layout, info.title.c_str(), -1);
     pango_layout_set_width(layout, (w - 48) * PANGO_SCALE);
     pango_layout_set_alignment(layout, PANGO_ALIGN_CENTER);
 
-    if (m_charging) {
-        cairo_set_source_rgba(cr, config.colors.accent.r, config.colors.accent.g, config.colors.accent.b, 1.0);
-    } else {
-        cairo_set_source_rgba(cr, config.colors.danger.r, config.colors.danger.g, config.colors.danger.b, 1.0);
-    }
+    cairo_set_source_rgba(cr, info.color.r, info.color.g, info.color.b, 1.0);
     cairo_move_to(cr, 24, start_y);
     pango_cairo_show_layout(cr, layout);
     pango_font_description_free(bold_desc);
 
     // Draw Subtitle
     pango_layout_set_font_description(layout, font_desc);
-    pango_layout_set_text(layout, sub.c_str(), -1);
+    pango_layout_set_text(layout, info.subtitle.c_str(), -1);
     pango_layout_set_width(layout, (w - 48) * PANGO_SCALE);
     pango_layout_set_alignment(layout, PANGO_ALIGN_CENTER);
 
-    cairo_set_source_rgba(cr, config.colors.text.r, config.colors.text.g, config.colors.text.b, 0.95);
+    cairo_set_source_rgba(cr, config.colors.subtext.r, config.colors.subtext.g, config.colors.subtext.b, 0.95);
     cairo_move_to(cr, 24, start_y + hh + 4);
     pango_cairo_show_layout(cr, layout);
 
@@ -368,6 +379,21 @@ bool BatteryModule::check_critical_alert(int& out_level, std::string& out_msg) {
         return true;
     }
 
+    return false;
+}
+
+bool BatteryModule::check_charging_started() {
+    if (!m_available) return false;
+    if (m_first_charging_check) {
+        m_was_charging = m_charging;
+        m_first_charging_check = false;
+        return false;
+    }
+    if (!m_was_charging && m_charging) {
+        m_was_charging = true;
+        return true;
+    }
+    m_was_charging = m_charging;
     return false;
 }
 
