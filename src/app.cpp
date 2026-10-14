@@ -438,6 +438,7 @@ void App::expand_to(IslandMode mode, int timeout_ms) {
     }
     if (mode == IslandMode::Expanded_Media && m_media_mod) {
         m_media_mod->update();
+        m_media_mod->on_expanded();
         m_last_media_update = m_anim_start;
     }
     if (mode == IslandMode::Expanded_Audio && m_audio_mod) {
@@ -1124,6 +1125,8 @@ void App::run() {
         int timeout_ms = 1000;
         if (m_animating) {
             timeout_ms = 16; // 60 FPS animation tick
+        } else if (m_mode == IslandMode::Expanded_Media && m_media_mod && m_media_mod->needs_marquee_animation()) {
+            timeout_ms = 20; // 50 FPS smooth marquee
         } else if (m_mode == IslandMode::Expanded_Network) {
             timeout_ms = 250; // Real-time network monitor tick
         } else if (m_mode == IslandMode::Expanded_System) {
@@ -1177,6 +1180,16 @@ void App::run() {
         // drive the frame directly so animation never hangs or stutters
         if (ret == 0 && m_animating) {
             handle_frame();
+        }
+
+        // Drive smooth marquee animation when Expanded_Media has overflowing text
+        if (m_mode == IslandMode::Expanded_Media && !m_animating && m_media_mod && m_media_mod->needs_marquee_animation()) {
+            static auto last_media_marquee_frame = std::chrono::steady_clock::now();
+            auto marquee_now = std::chrono::steady_clock::now();
+            if (std::chrono::duration_cast<std::chrono::milliseconds>(marquee_now - last_media_marquee_frame).count() >= 20) {
+                last_media_marquee_frame = marquee_now;
+                render_current_state();
+            }
         }
 
         auto now = std::chrono::steady_clock::now();

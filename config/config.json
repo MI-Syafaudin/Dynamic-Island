@@ -13,6 +13,7 @@
   "adaptive_width": true,
   "max_idle_width": 850,
   "max_window_title_length": 28,
+  "max_media_title_length": 28,
   "window_display_mode": "icon",
   "ping_target": "1.1.1.1",
   "colors": {

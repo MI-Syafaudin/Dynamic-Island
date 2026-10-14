@@ -1,6 +1,7 @@
 #pragma once
 
 #include "module_base.hpp"
+#include <chrono>
 
 namespace di {
 
@@ -22,13 +23,32 @@ public:
     void next_track();
     void prev_track();
 
+    bool needs_marquee_animation() const { return m_needs_marquee; }
+    void on_expanded();
+
 private:
     std::string m_status = "Stopped";
     std::string m_title;
     std::string m_artist;
     std::string m_player_name;
 
+    std::string m_last_title;
+    std::string m_last_artist;
+    std::chrono::steady_clock::time_point m_anim_start_time;
+    bool m_needs_marquee = false;
+
     void query_mpris();
+    void draw_marquee_text(
+        cairo_t* cr,
+        PangoFontDescription* font_desc,
+        const std::string& text,
+        int area_x,
+        int area_w,
+        int y,
+        const ColorRGBA& color,
+        bool is_bold,
+        bool& out_overflow
+    );
 };
 
 } // namespace di

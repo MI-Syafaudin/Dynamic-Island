@@ -7,16 +7,27 @@
 namespace di {
 
 MediaModule::MediaModule() {
+    m_anim_start_time = std::chrono::steady_clock::now();
     query_mpris();
 }
 
+void MediaModule::on_expanded() {
+    m_anim_start_time = std::chrono::steady_clock::now();
+}
+
 void MediaModule::query_mpris() {
+    std::string prev_title = m_title;
+    std::string prev_artist = m_artist;
+
     FILE* fp = popen("playerctl metadata --format '{{status}}:::{{playerName}}:::{{artist}}:::{{title}}' 2>/dev/null", "r");
     if (!fp) {
         m_status = "Stopped";
         m_title.clear();
         m_artist.clear();
         m_player_name.clear();
+        if (!prev_title.empty()) {
+            m_anim_start_time = std::chrono::steady_clock::now();
+        }
         return;
     }
 
@@ -33,6 +44,9 @@ void MediaModule::query_mpris() {
         m_title.clear();
         m_artist.clear();
         m_player_name.clear();
+        if (!prev_title.empty()) {
+            m_anim_start_time = std::chrono::steady_clock::now();
+        }
         return;
     }
 
@@ -69,6 +83,10 @@ void MediaModule::query_mpris() {
         m_artist.clear();
         m_player_name.clear();
     }
+
+    if (m_title != prev_title || m_artist != prev_artist) {
+        m_anim_start_time = std::chrono::steady_clock::now();
+    }
 }
 
 void MediaModule::update() {
@@ -94,15 +112,16 @@ void MediaModule::draw_compact(cairo_t* cr, PangoFontDescription* font_desc, con
     if (m_title.empty()) return;
 
     std::string display_title = m_title;
+    int max_len = config.max_media_title_length > 0 ? config.max_media_title_length : 28;
     if (g_utf8_validate(display_title.c_str(), -1, nullptr)) {
         glong char_count = g_utf8_strlen(display_title.c_str(), -1);
-        if (char_count > 16) {
-            gchar* end_ptr = g_utf8_offset_to_pointer(display_title.c_str(), 14);
+        if (char_count > max_len) {
+            gchar* end_ptr = g_utf8_offset_to_pointer(display_title.c_str(), std::max(1, max_len - 2));
             display_title = std::string(display_title.c_str(), end_ptr - display_title.c_str()) + "..";
         }
     } else {
-        if (display_title.length() > 16) {
-            display_title = display_title.substr(0, 14) + "..";
+        if (static_cast<int>(display_title.length()) > max_len) {
+            display_title = display_title.substr(0, std::max(1, max_len - 2)) + "..";
         }
     }
 
@@ -128,6 +147,109 @@ void MediaModule::draw_compact(cairo_t* cr, PangoFontDescription* font_desc, con
     hitboxes.push_back({current_x - 2, y, tw + 4, h, "toggle_expand", "media"});
     current_x += tw + 10;
 
+    g_object_unref(layout);
+}
+
+void MediaModule::draw_marquee_text(
+    cairo_t* cr,
+    PangoFontDescription* font_desc,
+    const std::string& text,
+    int area_x,
+    int area_w,
+    int y,
+    const ColorRGBA& color,
+    bool is_bold,
+    bool& out_overflow
+) {
+    if (text.empty() || area_w <= 0) {
+        out_overflow = false;
+        return;
+    }
+
+    PangoLayout* layout = pango_cairo_create_layout(cr);
+    PangoFontDescription* active_desc = font_desc;
+    PangoFontDescription* bold_desc = nullptr;
+    if (is_bold) {
+        bold_desc = pango_font_description_copy(font_desc);
+        pango_font_description_set_weight(bold_desc, PANGO_WEIGHT_BOLD);
+        active_desc = bold_desc;
+    }
+    pango_layout_set_font_description(layout, active_desc);
+    pango_layout_set_text(layout, text.c_str(), -1);
+    pango_layout_set_width(layout, -1);
+    pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_NONE);
+
+    int text_w = 0, text_h = 0;
+    pango_layout_get_pixel_size(layout, &text_w, &text_h);
+
+    if (text_w <= area_w) {
+        out_overflow = false;
+        int draw_x = area_x + (area_w - text_w) / 2;
+        cairo_set_source_rgba(cr, color.r, color.g, color.b, color.a);
+        cairo_move_to(cr, draw_x, y);
+        pango_cairo_show_layout(cr, layout);
+    } else {
+        out_overflow = true;
+        double overflow = static_cast<double>(text_w - area_w);
+
+        const double speed = 36.0;         // pixels per second forward
+        const double return_speed = 48.0;  // pixels per second return
+        const double pause_start = 2.2;    // seconds pause at start
+        const double pause_end = 1.8;      // seconds pause at end
+
+        double t_scroll = overflow / speed;
+        double t_return = overflow / return_speed;
+        double t_cycle = pause_start + t_scroll + pause_end + t_return;
+
+        auto now = std::chrono::steady_clock::now();
+        double elapsed = std::chrono::duration<double>(now - m_anim_start_time).count();
+        double t_rel = std::fmod(elapsed, t_cycle);
+        if (t_rel < 0) t_rel += t_cycle;
+
+        double offset = 0.0;
+        if (t_rel < pause_start) {
+            offset = 0.0;
+        } else if (t_rel < pause_start + t_scroll) {
+            double p = (t_rel - pause_start) / t_scroll;
+            double ease = 0.5 - 0.5 * std::cos(p * M_PI);
+            offset = ease * overflow;
+        } else if (t_rel < pause_start + t_scroll + pause_end) {
+            offset = overflow;
+        } else {
+            double p = (t_rel - (pause_start + t_scroll + pause_end)) / t_return;
+            double ease = 0.5 - 0.5 * std::cos(p * M_PI);
+            offset = (1.0 - ease) * overflow;
+        }
+
+        cairo_save(cr);
+        cairo_rectangle(cr, area_x, y - 2, area_w, text_h + 4);
+        cairo_clip(cr);
+
+        cairo_push_group(cr);
+        cairo_set_source_rgba(cr, color.r, color.g, color.b, color.a);
+        cairo_move_to(cr, area_x - offset, y);
+        pango_cairo_show_layout(cr, layout);
+        cairo_pop_group_to_source(cr);
+
+        double fade_w = 16.0;
+        double left_frac = std::clamp(fade_w / area_w, 0.01, 0.45);
+        double right_frac = std::clamp(1.0 - (fade_w / area_w), 0.55, 0.99);
+
+        cairo_pattern_t* mask = cairo_pattern_create_linear(area_x, 0, area_x + area_w, 0);
+        cairo_pattern_add_color_stop_rgba(mask, 0.0, 0, 0, 0, (offset > 2.0 ? 0.0 : 1.0));
+        cairo_pattern_add_color_stop_rgba(mask, left_frac, 0, 0, 0, 1.0);
+        cairo_pattern_add_color_stop_rgba(mask, right_frac, 0, 0, 0, 1.0);
+        cairo_pattern_add_color_stop_rgba(mask, 1.0, 0, 0, 0, (offset < (overflow - 2.0) ? 0.0 : 1.0));
+
+        cairo_mask(cr, mask);
+        cairo_pattern_destroy(mask);
+
+        cairo_restore(cr);
+    }
+
+    if (bold_desc) {
+        pango_font_description_free(bold_desc);
+    }
     g_object_unref(layout);
 }
 
@@ -202,33 +324,19 @@ void MediaModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, co
     cairo_move_to(cr, pill_x + pill_padding_x, pill_y + (pill_h - bth) / 2.0);
     pango_cairo_show_layout(cr, layout);
 
-    // 2. Title (Bold, Centered)
-    PangoFontDescription* bold_desc = pango_font_description_copy(font_desc);
-    pango_font_description_set_weight(bold_desc, PANGO_WEIGHT_BOLD);
-    pango_layout_set_font_description(layout, bold_desc);
-
+    // 2. Title (Bold, Centered or Smooth Ping-Pong Marquee)
     std::string disp_title = m_title.empty() ? "No Media Playing" : m_title;
-    pango_layout_set_text(layout, disp_title.c_str(), -1);
-    pango_layout_set_width(layout, (w - 40) * PANGO_SCALE);
-    pango_layout_set_alignment(layout, PANGO_ALIGN_CENTER);
-    pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
+    bool title_overflow = false;
+    draw_marquee_text(cr, font_desc, disp_title, 20, w - 40, 36, config.colors.text, true, title_overflow);
 
-    cairo_set_source_rgba(cr, config.colors.text.r, config.colors.text.g, config.colors.text.b, 1.0);
-    cairo_move_to(cr, 20, 36);
-    pango_cairo_show_layout(cr, layout);
-    pango_font_description_free(bold_desc);
-
-    // 3. Artist (Regular, Centered)
-    pango_layout_set_font_description(layout, font_desc);
+    // 3. Artist (Regular, Centered or Smooth Ping-Pong Marquee)
     std::string disp_artist = m_artist.empty() ? (m_title.empty() ? "Start playing music or video" : "Unknown Artist") : m_artist;
-    pango_layout_set_text(layout, disp_artist.c_str(), -1);
-    pango_layout_set_width(layout, (w - 40) * PANGO_SCALE);
-    pango_layout_set_alignment(layout, PANGO_ALIGN_CENTER);
-    pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
+    bool artist_overflow = false;
+    ColorRGBA artist_color = config.colors.subtext;
+    artist_color.a = 0.85;
+    draw_marquee_text(cr, font_desc, disp_artist, 20, w - 40, 58, artist_color, false, artist_overflow);
 
-    cairo_set_source_rgba(cr, config.colors.subtext.r, config.colors.subtext.g, config.colors.subtext.b, 0.85);
-    cairo_move_to(cr, 20, 58);
-    pango_cairo_show_layout(cr, layout);
+    m_needs_marquee = (title_overflow || artist_overflow);
 
     // 4. Playback Controls Row: Prev, Play/Pause, Next
     int btn_h = 28;

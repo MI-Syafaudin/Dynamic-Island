@@ -64,6 +64,7 @@ bool Config::load_default() {
     adaptive_width = true;
     max_idle_width = 850;
     max_window_title_length = 28;
+    max_media_title_length = 28;
 
     colors.background = ColorRGBA::from_hex("#111111", opacity);
     colors.border = ColorRGBA::from_hex("#2c2c2e", 0.7);
@@ -113,6 +114,7 @@ bool Config::load_from_file(const std::string& path) {
     if (root.has("adaptive_width")) adaptive_width = root["adaptive_width"].as_bool(adaptive_width);
     if (root.has("max_idle_width")) max_idle_width = root["max_idle_width"].as_int(max_idle_width);
     if (root.has("max_window_title_length")) max_window_title_length = root["max_window_title_length"].as_int(max_window_title_length);
+    if (root.has("max_media_title_length")) max_media_title_length = root["max_media_title_length"].as_int(max_media_title_length);
     if (root.has("window_display_mode")) window_display_mode = root["window_display_mode"].as_string(window_display_mode);
     if (root.has("ping_target")) ping_target = root["ping_target"].as_string(ping_target);
 
