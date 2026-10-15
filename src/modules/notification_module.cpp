@@ -32,7 +32,7 @@ void NotificationModule::draw_compact(cairo_t* cr, PangoFontDescription* font_de
     g_object_unref(layout);
 }
 
-void NotificationModule::get_preferred_dimensions(PangoFontDescription* font_desc, const Config& config, double& w, double& h) {
+void NotificationModule::get_preferred_dimensions(PangoFontDescription* font_desc, const Config& config, double& w, double& h, cairo_t* cr) {
     if (m_message.empty() && m_app_name.empty()) {
         w = 340.0;
         h = 64.0;
@@ -46,8 +46,13 @@ void NotificationModule::get_preferred_dimensions(PangoFontDescription* font_des
         free_desc = true;
     }
 
-    cairo_surface_t* surface = cairo_recording_surface_create(CAIRO_CONTENT_COLOR_ALPHA, nullptr);
-    cairo_t* cr = cairo_create(surface);
+    bool destroy_cr = false;
+    cairo_surface_t* temp_surface = nullptr;
+    if (!cr) {
+        temp_surface = cairo_image_surface_create(CAIRO_FORMAT_A8, 1, 1);
+        cr = cairo_create(temp_surface);
+        destroy_cr = true;
+    }
     PangoLayout* layout = pango_cairo_create_layout(cr);
 
     // 1. Header size (Bold)
@@ -84,8 +89,10 @@ void NotificationModule::get_preferred_dimensions(PangoFontDescription* font_des
     pango_layout_get_pixel_size(layout, &final_mw, &final_mh);
 
     g_object_unref(layout);
-    cairo_destroy(cr);
-    cairo_surface_destroy(surface);
+    if (destroy_cr) {
+        cairo_destroy(cr);
+        cairo_surface_destroy(temp_surface);
+    }
 
     if (free_desc && font_desc) {
         pango_font_description_free(font_desc);

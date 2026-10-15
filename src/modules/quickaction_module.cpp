@@ -80,27 +80,52 @@ void QuickActionModule::query_states() {
     }
     m_wifi_active.store(wifi_on);
 
-    // 2. Bluetooth state: bluetoothctl show
-    FILE* fp = popen("bluetoothctl show 2>/dev/null", "r");
+    // 2. Bluetooth state: Check sysfs rfkill first (instantaneous microsecond read)
     bool bt_on = false;
-    if (fp) {
-        char buf[256];
-        while (fgets(buf, sizeof(buf), fp)) {
-            std::string line = buf;
-            if (line.find("Powered: yes") != std::string::npos) {
-                bt_on = true;
-                break;
-            } else if (line.find("Powered: no") != std::string::npos) {
-                bt_on = false;
-                break;
+    bool found_rfkill_bt = false;
+    for (int i = 0; i < 16; ++i) {
+        std::string path_type = "/sys/class/rfkill/rfkill" + std::to_string(i) + "/type";
+        std::string path_soft = "/sys/class/rfkill/rfkill" + std::to_string(i) + "/soft";
+        FILE* tf = fopen(path_type.c_str(), "r");
+        if (tf) {
+            char tbuf[32];
+            if (fgets(tbuf, sizeof(tbuf), tf)) {
+                if (std::string(tbuf).find("bluetooth") != std::string::npos) {
+                    found_rfkill_bt = true;
+                    FILE* sf = fopen(path_soft.c_str(), "r");
+                    if (sf) {
+                        char sbuf[16];
+                        if (fgets(sbuf, sizeof(sbuf), sf) && sbuf[0] == '0') {
+                            bt_on = true;
+                        }
+                        fclose(sf);
+                    }
+                }
             }
+            fclose(tf);
         }
-        pclose(fp);
+    }
+    if (!found_rfkill_bt) {
+        FILE* fp = popen("bluetoothctl show 2>/dev/null", "r");
+        if (fp) {
+            char buf[256];
+            while (fgets(buf, sizeof(buf), fp)) {
+                std::string line = buf;
+                if (line.find("Powered: yes") != std::string::npos) {
+                    bt_on = true;
+                    break;
+                } else if (line.find("Powered: no") != std::string::npos) {
+                    bt_on = false;
+                    break;
+                }
+            }
+            pclose(fp);
+        }
     }
     m_bt_active.store(bt_on);
 
     // 3. Audio Mute state: wpctl get-volume @DEFAULT_AUDIO_SINK@
-    fp = popen("wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null", "r");
+    FILE* fp = popen("wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null", "r");
     bool mute_on = false;
     if (fp) {
         char buf[128];
@@ -175,9 +200,10 @@ void QuickActionModule::query_states() {
     m_night_active.store(proc_running || shader_active);
 }
 
-void QuickActionModule::get_preferred_dimensions(PangoFontDescription* font_desc, const Config& config, double& w, double& h) {
+void QuickActionModule::get_preferred_dimensions(PangoFontDescription* font_desc, const Config& config, double& w, double& h, cairo_t* cr) {
     (void)font_desc;
     (void)config;
+    (void)cr;
     w = 540.0;
     h = 76.0;
 }
@@ -325,19 +351,29 @@ void QuickActionModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_de
         cairo_move_to(cr, bx + (btn_w - tw) / 2, btn_y + 4);
         pango_cairo_show_layout(cr, layout);
 
-        // Label with dynamic auto-fit so text never extends outside the button
+        // Label with dynamic auto-fit (cached to avoid re-measuring on every frame)
         PangoFontDescription* label_desc = pango_font_description_copy(font_desc);
+        auto it = m_label_font_sizes.find(buttons[i].label);
         double cur_sz = 6.2;
-        pango_font_description_set_size(label_desc, static_cast<int>(cur_sz * PANGO_SCALE));
-        pango_layout_set_font_description(layout, label_desc);
-        pango_layout_set_text(layout, buttons[i].label.c_str(), -1);
-        pango_layout_get_pixel_size(layout, &tw, &th);
-
-        while (tw > btn_w - 6 && cur_sz > 4.5) {
-            cur_sz -= 0.3;
+        if (it != m_label_font_sizes.end()) {
+            cur_sz = it->second;
             pango_font_description_set_size(label_desc, static_cast<int>(cur_sz * PANGO_SCALE));
             pango_layout_set_font_description(layout, label_desc);
+            pango_layout_set_text(layout, buttons[i].label.c_str(), -1);
             pango_layout_get_pixel_size(layout, &tw, &th);
+        } else {
+            pango_font_description_set_size(label_desc, static_cast<int>(cur_sz * PANGO_SCALE));
+            pango_layout_set_font_description(layout, label_desc);
+            pango_layout_set_text(layout, buttons[i].label.c_str(), -1);
+            pango_layout_get_pixel_size(layout, &tw, &th);
+
+            while (tw > btn_w - 6 && cur_sz > 4.5) {
+                cur_sz -= 0.3;
+                pango_font_description_set_size(label_desc, static_cast<int>(cur_sz * PANGO_SCALE));
+                pango_layout_set_font_description(layout, label_desc);
+                pango_layout_get_pixel_size(layout, &tw, &th);
+            }
+            m_label_font_sizes[buttons[i].label] = cur_sz;
         }
 
         if (buttons[i].is_active) {

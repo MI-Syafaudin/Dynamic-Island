@@ -16,6 +16,7 @@ public:
     bool is_muted() const { return m_muted; }
 
     void change_volume(int delta_percent);
+    void set_volume(int vol);
     void toggle_mute();
 
 private:

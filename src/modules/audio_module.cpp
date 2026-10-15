@@ -5,7 +5,32 @@
 #include <sstream>
 #include <algorithm>
 
+#include <unistd.h>
+#include <fcntl.h>
+#include <vector>
+
 namespace di {
+
+static void run_wpctl_async(const std::vector<std::string>& args) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        std::vector<char*> argv;
+        argv.push_back(const_cast<char*>("wpctl"));
+        for (const auto& a : args) {
+            argv.push_back(const_cast<char*>(a.c_str()));
+        }
+        argv.push_back(nullptr);
+        execvp("wpctl", argv.data());
+        _exit(1);
+    }
+}
 
 AudioModule::AudioModule() {
     query_audio_state();
@@ -39,21 +64,22 @@ void AudioModule::update() {
 }
 
 void AudioModule::change_volume(int delta_percent) {
-    std::stringstream ss;
-    if (delta_percent >= 0) {
-        ss << "wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ " << delta_percent << "%+ 2>/dev/null";
-    } else {
-        ss << "wpctl set-volume @DEFAULT_AUDIO_SINK@ " << (-delta_percent) << "%- 2>/dev/null";
-    }
-    std::system(ss.str().c_str());
     m_volume = std::clamp(m_volume + delta_percent, 0, 150);
-    query_audio_state();
+    if (delta_percent >= 0) {
+        run_wpctl_async({"set-volume", "-l", "1.5", "@DEFAULT_AUDIO_SINK@", std::to_string(delta_percent) + "%+"});
+    } else {
+        run_wpctl_async({"set-volume", "@DEFAULT_AUDIO_SINK@", std::to_string(-delta_percent) + "%-"});
+    }
+}
+
+void AudioModule::set_volume(int vol) {
+    m_volume = std::clamp(vol, 0, 150);
+    run_wpctl_async({"set-volume", "@DEFAULT_AUDIO_SINK@", std::to_string(m_volume) + "%"});
 }
 
 void AudioModule::toggle_mute() {
-    std::system("wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle 2>/dev/null");
     m_muted = !m_muted;
-    query_audio_state();
+    run_wpctl_async({"set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"});
 }
 
 void AudioModule::draw_compact(cairo_t* cr, PangoFontDescription* font_desc, const Config& config, int& current_x, int y, int h, std::vector<HitBox>& hitboxes) {

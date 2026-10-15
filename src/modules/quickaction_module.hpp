@@ -5,6 +5,7 @@
 #include <thread>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 
 namespace di {
 
@@ -18,7 +19,7 @@ public:
     void draw_compact(cairo_t* cr, PangoFontDescription* font_desc, const Config& config, int& current_x, int y, int h, std::vector<HitBox>& hitboxes) override;
     void draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, const Config& config, int w, int h, std::vector<HitBox>& hitboxes) override;
     bool handle_click(const std::string& action, const std::string& param) override;
-    void get_preferred_dimensions(PangoFontDescription* font_desc, const Config& config, double& w, double& h) override;
+    void get_preferred_dimensions(PangoFontDescription* font_desc, const Config& config, double& w, double& h, cairo_t* cr = nullptr) override;
 
     bool is_dark_active() const { return m_dark_active.load(); }
     bool is_night_active() const { return m_night_active.load(); }
@@ -39,6 +40,7 @@ private:
     std::atomic<bool> m_updating{false};
     std::thread m_worker_thread;
     std::mutex m_worker_mutex;
+    std::unordered_map<std::string, double> m_label_font_sizes;
 
     void query_states();
 };

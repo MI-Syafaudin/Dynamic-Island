@@ -52,7 +52,7 @@ void ClockModule::load_alarms() {
     m_alarms.clear();
     int max_id = 0;
 
-    for (const auto& item : root.arr_val) {
+    for (const auto& item : root.as_array()) {
         if (!item.is_object()) continue;
         AlarmItem alarm;
         alarm.id = item.has("id") ? item["id"].as_int() : 1;

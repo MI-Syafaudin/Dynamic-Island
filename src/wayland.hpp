@@ -11,8 +11,12 @@ namespace di {
 
 struct WaylandBuffer {
     struct wl_buffer* buffer = nullptr;
+    struct wl_shm_pool* pool = nullptr;
     void* shm_data = nullptr;
     size_t size = 0;
+    size_t allocated_capacity = 0;
+    int width = 0;
+    int height = 0;
     bool busy = false;
     cairo_surface_t* cairo_surface = nullptr;
 };
@@ -86,7 +90,7 @@ private:
 
     uint32_t get_layer_enum() const;
 
-    WaylandBuffer m_buffers[2];
+    WaylandBuffer m_buffers[3];
     int m_current_buffer_idx = 0;
     cairo_t* m_active_cr = nullptr;
 
@@ -98,6 +102,7 @@ private:
     MouseScrollCallback m_on_scroll;
     FrameCallback m_on_frame;
 
+    bool ensure_buffer_storage(WaylandBuffer& buf, int width, int height);
     bool create_shm_buffer(WaylandBuffer& buf, int width, int height);
     void destroy_shm_buffer(WaylandBuffer& buf);
 };

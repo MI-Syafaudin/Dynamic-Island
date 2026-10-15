@@ -3,9 +3,11 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <variant>
 #include <sstream>
 #include <stdexcept>
 #include <cctype>
+#include <utility>
 
 namespace di {
 
@@ -18,64 +20,105 @@ enum class JsonType {
     Object
 };
 
+class JsonValue;
+using JsonArray = std::vector<JsonValue>;
+using JsonObject = std::map<std::string, JsonValue>;
+
 class JsonValue {
 public:
-    JsonType type = JsonType::Null;
-    bool bool_val = false;
-    double num_val = 0.0;
-    std::string str_val;
-    std::vector<JsonValue> arr_val;
-    std::map<std::string, JsonValue> obj_val;
+    using ValueType = std::variant<
+        std::monostate, // Null
+        bool,           // Boolean
+        double,         // Number
+        std::string,    // String
+        JsonArray,      // Array
+        JsonObject      // Object
+    >;
 
-    JsonValue() : type(JsonType::Null) {}
-    explicit JsonValue(bool b) : type(JsonType::Boolean), bool_val(b) {}
-    explicit JsonValue(double n) : type(JsonType::Number), num_val(n) {}
-    explicit JsonValue(int n) : type(JsonType::Number), num_val(static_cast<double>(n)) {}
-    explicit JsonValue(const std::string& s) : type(JsonType::String), str_val(s) {}
-    explicit JsonValue(const char* s) : type(JsonType::String), str_val(s ? s : "") {}
-    explicit JsonValue(const std::vector<JsonValue>& a) : type(JsonType::Array), arr_val(a) {}
-    explicit JsonValue(const std::map<std::string, JsonValue>& o) : type(JsonType::Object), obj_val(o) {}
+    ValueType value;
 
-    bool is_null() const { return type == JsonType::Null; }
-    bool is_bool() const { return type == JsonType::Boolean; }
-    bool is_number() const { return type == JsonType::Number; }
-    bool is_string() const { return type == JsonType::String; }
-    bool is_array() const { return type == JsonType::Array; }
-    bool is_object() const { return type == JsonType::Object; }
+    JsonValue() : value(std::monostate{}) {}
+    explicit JsonValue(bool b) : value(b) {}
+    explicit JsonValue(double n) : value(n) {}
+    explicit JsonValue(int n) : value(static_cast<double>(n)) {}
+    explicit JsonValue(const std::string& s) : value(s) {}
+    explicit JsonValue(std::string&& s) : value(std::move(s)) {}
+    explicit JsonValue(const char* s) : value(std::string(s ? s : "")) {}
+    explicit JsonValue(const JsonArray& a) : value(a) {}
+    explicit JsonValue(JsonArray&& a) : value(std::move(a)) {}
+    explicit JsonValue(const JsonObject& o) : value(o) {}
+    explicit JsonValue(JsonObject&& o) : value(std::move(o)) {}
+
+    bool is_null() const { return std::holds_alternative<std::monostate>(value); }
+    bool is_bool() const { return std::holds_alternative<bool>(value); }
+    bool is_number() const { return std::holds_alternative<double>(value); }
+    bool is_string() const { return std::holds_alternative<std::string>(value); }
+    bool is_array() const { return std::holds_alternative<JsonArray>(value); }
+    bool is_object() const { return std::holds_alternative<JsonObject>(value); }
+
+    JsonType type() const {
+        if (is_null()) return JsonType::Null;
+        if (is_bool()) return JsonType::Boolean;
+        if (is_number()) return JsonType::Number;
+        if (is_string()) return JsonType::String;
+        if (is_array()) return JsonType::Array;
+        return JsonType::Object;
+    }
 
     bool as_bool(bool default_val = false) const {
-        return (type == JsonType::Boolean) ? bool_val : default_val;
+        if (auto p = std::get_if<bool>(&value)) return *p;
+        return default_val;
     }
 
     double as_double(double default_val = 0.0) const {
-        return (type == JsonType::Number) ? num_val : default_val;
+        if (auto p = std::get_if<double>(&value)) return *p;
+        return default_val;
     }
 
     int as_int(int default_val = 0) const {
-        return (type == JsonType::Number) ? static_cast<int>(num_val) : default_val;
+        if (auto p = std::get_if<double>(&value)) return static_cast<int>(*p);
+        return default_val;
     }
 
     std::string as_string(const std::string& default_val = "") const {
-        return (type == JsonType::String) ? str_val : default_val;
+        if (auto p = std::get_if<std::string>(&value)) return *p;
+        return default_val;
+    }
+
+    const JsonArray& as_array() const {
+        static const JsonArray empty_arr;
+        if (auto p = std::get_if<JsonArray>(&value)) return *p;
+        return empty_arr;
+    }
+
+    const JsonObject& as_object() const {
+        static const JsonObject empty_obj;
+        if (auto p = std::get_if<JsonObject>(&value)) return *p;
+        return empty_obj;
     }
 
     bool has(const std::string& key) const {
-        if (type != JsonType::Object) return false;
-        return obj_val.find(key) != obj_val.end();
+        if (auto p = std::get_if<JsonObject>(&value)) {
+            return p->find(key) != p->end();
+        }
+        return false;
     }
 
     const JsonValue& operator[](const std::string& key) const {
-        static JsonValue null_val;
-        if (type != JsonType::Object) return null_val;
-        auto it = obj_val.find(key);
-        if (it != obj_val.end()) return it->second;
+        static const JsonValue null_val;
+        if (auto p = std::get_if<JsonObject>(&value)) {
+            auto it = p->find(key);
+            if (it != p->end()) return it->second;
+        }
         return null_val;
     }
 
     const JsonValue& operator[](size_t index) const {
-        static JsonValue null_val;
-        if (type != JsonType::Array || index >= arr_val.size()) return null_val;
-        return arr_val[index];
+        static const JsonValue null_val;
+        if (auto p = std::get_if<JsonArray>(&value)) {
+            if (index < p->size()) return (*p)[index];
+        }
+        return null_val;
     }
 };
 
@@ -146,7 +189,7 @@ private:
         std::string s;
         while (pos < text.size()) {
             char c = text[pos++];
-            if (c == '"') return JsonValue(s);
+            if (c == '"') return JsonValue(std::move(s));
             if (c == '\\' && pos < text.size()) {
                 char esc = text[pos++];
                 if (esc == '"') s += '"';
@@ -162,7 +205,7 @@ private:
                 s += c;
             }
         }
-        return JsonValue(s);
+        return JsonValue(std::move(s));
     }
 
     static JsonValue parse_number(const std::string& text, size_t& pos) {
@@ -189,12 +232,12 @@ private:
 
     static JsonValue parse_array(const std::string& text, size_t& pos) {
         pos++; // skip '['
-        std::vector<JsonValue> arr;
+        JsonArray arr;
         while (pos < text.size()) {
             skip_whitespace(text, pos);
             if (pos < text.size() && text[pos] == ']') {
                 pos++;
-                return JsonValue(arr);
+                return JsonValue(std::move(arr));
             }
             arr.push_back(parse_value(text, pos));
             skip_whitespace(text, pos);
@@ -202,17 +245,17 @@ private:
                 pos++;
             }
         }
-        return JsonValue(arr);
+        return JsonValue(std::move(arr));
     }
 
     static JsonValue parse_object(const std::string& text, size_t& pos) {
         pos++; // skip '{'
-        std::map<std::string, JsonValue> obj;
+        JsonObject obj;
         while (pos < text.size()) {
             skip_whitespace(text, pos);
             if (pos < text.size() && text[pos] == '}') {
                 pos++;
-                return JsonValue(obj);
+                return JsonValue(std::move(obj));
             }
             if (text[pos] != '"') {
                 pos++;
@@ -224,13 +267,13 @@ private:
                 pos++;
             }
             JsonValue val = parse_value(text, pos);
-            obj[key_val.as_string()] = val;
+            obj.emplace(key_val.as_string(), std::move(val));
             skip_whitespace(text, pos);
             if (pos < text.size() && text[pos] == ',') {
                 pos++;
             }
         }
-        return JsonValue(obj);
+        return JsonValue(std::move(obj));
     }
 };
 

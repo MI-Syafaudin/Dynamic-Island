@@ -196,41 +196,81 @@ bool WaylandBackend::init(int width, int height, int margin_top, const std::stri
     return true;
 }
 
-bool WaylandBackend::create_shm_buffer(WaylandBuffer& buf, int width, int height) {
-    destroy_shm_buffer(buf);
-
+bool WaylandBackend::ensure_buffer_storage(WaylandBuffer& buf, int width, int height) {
     int stride = width * 4;
-    size_t size = stride * height;
+    size_t required_size = static_cast<size_t>(stride) * height;
 
-    int fd = memfd_create("dynamic-island-shm", MFD_CLOEXEC | MFD_ALLOW_SEALING);
-    if (fd < 0) return false;
+    constexpr size_t DEFAULT_CAPACITY = 850 * 240 * 4; // 816,000 bytes pre-allocation
 
-    if (ftruncate(fd, size) < 0) {
+    // Allocate or grow mmap storage only if needed
+    if (!buf.shm_data || buf.allocated_capacity < required_size) {
+        destroy_shm_buffer(buf);
+
+        size_t new_cap = std::max(required_size, DEFAULT_CAPACITY);
+        if (buf.allocated_capacity > 0) {
+            new_cap = std::max(new_cap, buf.allocated_capacity * 2);
+        }
+
+        int fd = memfd_create("dynamic-island-shm", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+        if (fd < 0) return false;
+
+        if (ftruncate(fd, new_cap) < 0) {
+            close(fd);
+            return false;
+        }
+
+        void* data = mmap(nullptr, new_cap, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (data == MAP_FAILED) {
+            close(fd);
+            return false;
+        }
+
+        struct wl_shm_pool* pool = wl_shm_create_pool(m_shm, fd, new_cap);
         close(fd);
-        return false;
+
+        if (!pool) {
+            munmap(data, new_cap);
+            return false;
+        }
+
+        buf.shm_data = data;
+        buf.allocated_capacity = new_cap;
+        buf.pool = pool;
+    } else {
+        // Sufficient capacity already mapped!
+        // Re-create wl_buffer and cairo_surface over existing mmap pointer without unmapping
+        if (buf.cairo_surface) {
+            cairo_surface_destroy(buf.cairo_surface);
+            buf.cairo_surface = nullptr;
+        }
+        if (buf.buffer) {
+            wl_buffer_destroy(buf.buffer);
+            buf.buffer = nullptr;
+        }
     }
 
-    void* data = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (data == MAP_FAILED) {
-        close(fd);
-        return false;
-    }
-
-    struct wl_shm_pool* pool = wl_shm_create_pool(m_shm, fd, size);
-    buf.buffer = wl_shm_pool_create_buffer(pool, 0, width, height, stride, WL_SHM_FORMAT_ARGB8888);
-    wl_shm_pool_destroy(pool);
-    close(fd);
-
-    buf.shm_data = data;
-    buf.size = size;
-    buf.busy = false;
-
-    buf.cairo_surface = cairo_image_surface_create_for_data(
-        static_cast<unsigned char*>(data), CAIRO_FORMAT_ARGB32, width, height, stride
-    );
+    buf.buffer = wl_shm_pool_create_buffer(buf.pool, 0, width, height, stride, WL_SHM_FORMAT_ARGB8888);
+    if (!buf.buffer) return false;
 
     wl_buffer_add_listener(buf.buffer, &buffer_listener, &buf);
+
+    buf.cairo_surface = cairo_image_surface_create_for_data(
+        static_cast<unsigned char*>(buf.shm_data), CAIRO_FORMAT_ARGB32, width, height, stride
+    );
+    if (!buf.cairo_surface || cairo_surface_status(buf.cairo_surface) != CAIRO_STATUS_SUCCESS) {
+        return false;
+    }
+
+    buf.width = width;
+    buf.height = height;
+    buf.size = required_size;
+    buf.busy = false;
+
     return true;
+}
+
+bool WaylandBackend::create_shm_buffer(WaylandBuffer& buf, int width, int height) {
+    return ensure_buffer_storage(buf, width, height);
 }
 
 void WaylandBackend::destroy_shm_buffer(WaylandBuffer& buf) {
@@ -242,17 +282,25 @@ void WaylandBackend::destroy_shm_buffer(WaylandBuffer& buf) {
         wl_buffer_destroy(buf.buffer);
         buf.buffer = nullptr;
     }
+    if (buf.pool) {
+        wl_shm_pool_destroy(buf.pool);
+        buf.pool = nullptr;
+    }
     if (buf.shm_data && buf.shm_data != MAP_FAILED) {
-        munmap(buf.shm_data, buf.size);
+        munmap(buf.shm_data, buf.allocated_capacity);
         buf.shm_data = nullptr;
     }
     buf.size = 0;
+    buf.allocated_capacity = 0;
+    buf.width = 0;
+    buf.height = 0;
     buf.busy = false;
 }
 
 void WaylandBackend::cleanup() {
-    destroy_shm_buffer(m_buffers[0]);
-    destroy_shm_buffer(m_buffers[1]);
+    for (int i = 0; i < 3; ++i) {
+        destroy_shm_buffer(m_buffers[i]);
+    }
 
     if (m_frame_callback) {
         wl_callback_destroy(m_frame_callback);
@@ -372,15 +420,24 @@ void WaylandBackend::request_frame_callback() {
 cairo_t* WaylandBackend::begin_frame() {
     if (!m_configured || !m_visible || m_width <= 0 || m_height <= 0) return nullptr;
 
-    // Pick next free buffer
-    m_current_buffer_idx = (m_current_buffer_idx + 1) % 2;
+    // Pick a non-busy buffer (triple buffering)
+    int chosen_idx = -1;
+    for (int i = 0; i < 3; ++i) {
+        int idx = (m_current_buffer_idx + 1 + i) % 3;
+        if (!m_buffers[idx].busy) {
+            chosen_idx = idx;
+            break;
+        }
+    }
+    if (chosen_idx == -1) {
+        chosen_idx = (m_current_buffer_idx + 1) % 3;
+    }
+    m_current_buffer_idx = chosen_idx;
     WaylandBuffer& buf = m_buffers[m_current_buffer_idx];
 
-    // Recreate buffer if size changed
-    int stride = m_width * 4;
-    size_t required_size = stride * m_height;
-    if (!buf.buffer || buf.size != required_size) {
-        if (!create_shm_buffer(buf, m_width, m_height)) {
+    // Recreate buffer if not yet initialized or dimensions changed explicitly
+    if (!buf.buffer || buf.width != m_width || buf.height != m_height) {
+        if (!ensure_buffer_storage(buf, m_width, m_height)) {
             return nullptr;
         }
     }

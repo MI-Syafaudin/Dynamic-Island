@@ -119,4 +119,57 @@ void HyprlandIpc::process_incoming() {
     }
 }
 
+std::string HyprlandIpc::request(std::string_view cmd) {
+    const char* xdg_runtime = std::getenv("XDG_RUNTIME_DIR");
+    const char* his = std::getenv("HYPRLAND_INSTANCE_SIGNATURE");
+    if (!xdg_runtime || !his) return "";
+
+    std::string sock_path = std::string(xdg_runtime) + "/hypr/" + his + "/.socket.sock";
+
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return "";
+
+    struct sockaddr_un addr;
+    std::memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    std::strncpy(addr.sun_path, sock_path.c_str(), sizeof(addr.sun_path) - 1);
+
+    if (::connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return "";
+    }
+
+    std::string command(cmd);
+    if (command.rfind("hyprctl ", 0) == 0) {
+        command = command.substr(8);
+    }
+    if (command == "activewindow -j") {
+        command = "j/activewindow";
+    } else if (command == "activeworkspace -j") {
+        command = "j/activeworkspace";
+    } else if (command.ends_with(" -j")) {
+        command = "j/" + command.substr(0, command.length() - 3);
+    }
+
+    ssize_t sent = write(fd, command.data(), command.size());
+    if (sent < 0) {
+        close(fd);
+        return "";
+    }
+
+    std::string response;
+    char buffer[4096];
+    while (true) {
+        ssize_t n = read(fd, buffer, sizeof(buffer));
+        if (n > 0) {
+            response.append(buffer, n);
+        } else {
+            break;
+        }
+    }
+
+    close(fd);
+    return response;
+}
+
 } // namespace di

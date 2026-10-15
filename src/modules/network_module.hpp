@@ -25,15 +25,28 @@ public:
     void update() override;
     void draw_compact(cairo_t* cr, PangoFontDescription* font_desc, const Config& config, int& current_x, int y, int h, std::vector<HitBox>& hitboxes) override;
     void draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, const Config& config, int w, int h, std::vector<HitBox>& hitboxes) override;
-    void get_preferred_dimensions(PangoFontDescription* font_desc, const Config& config, double& w, double& h) override;
+    void get_preferred_dimensions(PangoFontDescription* font_desc, const Config& config, double& w, double& h, cairo_t* cr = nullptr) override;
 
     void on_expanded();
     void on_collapsed();
     void set_ping_target(const std::string& target) { m_ping_target = target; }
 
-    bool is_connected() const { return m_connected; }
-    const std::string& get_ssid() const { return m_ssid; }
-    const std::string& get_ip() const { return m_ip; }
+    bool is_connected() const {
+        std::lock_guard<std::mutex> lock(m_metrics_mutex);
+        return m_connected;
+    }
+    bool is_wifi() const {
+        std::lock_guard<std::mutex> lock(m_metrics_mutex);
+        return m_is_wifi;
+    }
+    std::string get_ssid() const {
+        std::lock_guard<std::mutex> lock(m_metrics_mutex);
+        return m_ssid;
+    }
+    std::string get_ip() const {
+        std::lock_guard<std::mutex> lock(m_metrics_mutex);
+        return m_ip;
+    }
 
     double get_ping() const;
     double get_jitter() const;

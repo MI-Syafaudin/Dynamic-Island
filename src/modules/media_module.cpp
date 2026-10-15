@@ -9,25 +9,56 @@ namespace di {
 MediaModule::MediaModule() {
     m_anim_start_time = std::chrono::steady_clock::now();
     query_mpris();
+    m_worker_running = true;
+    m_worker_thread = std::thread(&MediaModule::worker_loop, this);
+}
+
+MediaModule::~MediaModule() {
+    {
+        std::lock_guard<std::mutex> lock(m_worker_mutex);
+        m_worker_running = false;
+    }
+    m_worker_cv.notify_all();
+    if (m_worker_thread.joinable()) {
+        m_worker_thread.join();
+    }
 }
 
 void MediaModule::on_expanded() {
     m_anim_start_time = std::chrono::steady_clock::now();
 }
 
-void MediaModule::query_mpris() {
-    std::string prev_title = m_title;
-    std::string prev_artist = m_artist;
+void MediaModule::worker_loop() {
+    while (m_worker_running) {
+        int wait_ms = 1500;
+        {
+            std::unique_lock<std::mutex> lock(m_worker_mutex);
+            m_worker_cv.wait_for(lock, std::chrono::milliseconds(wait_ms), [this]() {
+                return !m_worker_running || m_request_query.load();
+            });
+            if (!m_worker_running) break;
+            m_request_query.store(false);
+        }
+        query_mpris();
+    }
+}
 
+void MediaModule::trigger_async_query() {
+    m_request_query.store(true);
+    m_worker_cv.notify_one();
+}
+
+void MediaModule::query_mpris() {
     FILE* fp = popen("playerctl metadata --format '{{status}}:::{{playerName}}:::{{artist}}:::{{title}}' 2>/dev/null", "r");
     if (!fp) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!m_title.empty()) {
+            m_anim_start_time = std::chrono::steady_clock::now();
+        }
         m_status = "Stopped";
         m_title.clear();
         m_artist.clear();
         m_player_name.clear();
-        if (!prev_title.empty()) {
-            m_anim_start_time = std::chrono::steady_clock::now();
-        }
         return;
     }
 
@@ -40,78 +71,95 @@ void MediaModule::query_mpris() {
     pclose(fp);
 
     if (line.empty()) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!m_title.empty()) {
+            m_anim_start_time = std::chrono::steady_clock::now();
+        }
         m_status = "Stopped";
         m_title.clear();
         m_artist.clear();
         m_player_name.clear();
-        if (!prev_title.empty()) {
-            m_anim_start_time = std::chrono::steady_clock::now();
-        }
         return;
     }
+
+    std::string status;
+    std::string player_name;
+    std::string artist;
+    std::string title;
 
     size_t p1 = line.find(":::");
     if (p1 == std::string::npos) {
-        m_status = line;
-        m_title.clear();
-        m_artist.clear();
-        m_player_name.clear();
-        return;
-    }
-    m_status = line.substr(0, p1);
-
-    size_t p2 = line.find(":::", p1 + 3);
-    if (p2 == std::string::npos) {
-        m_player_name = line.substr(p1 + 3);
-        m_artist.clear();
-        m_title.clear();
-        return;
-    }
-    m_player_name = line.substr(p1 + 3, p2 - (p1 + 3));
-
-    size_t p3 = line.find(":::", p2 + 3);
-    if (p3 == std::string::npos) {
-        m_artist = line.substr(p2 + 3);
-        m_title.clear();
-        return;
-    }
-    m_artist = line.substr(p2 + 3, p3 - (p2 + 3));
-    m_title = line.substr(p3 + 3);
-
-    if (m_status == "Stopped") {
-        m_title.clear();
-        m_artist.clear();
-        m_player_name.clear();
+        status = line;
+    } else {
+        status = line.substr(0, p1);
+        size_t p2 = line.find(":::", p1 + 3);
+        if (p2 == std::string::npos) {
+            player_name = line.substr(p1 + 3);
+        } else {
+            player_name = line.substr(p1 + 3, p2 - (p1 + 3));
+            size_t p3 = line.find(":::", p2 + 3);
+            if (p3 == std::string::npos) {
+                artist = line.substr(p2 + 3);
+            } else {
+                artist = line.substr(p2 + 3, p3 - (p2 + 3));
+                title = line.substr(p3 + 3);
+            }
+        }
     }
 
-    if (m_title != prev_title || m_artist != prev_artist) {
-        m_anim_start_time = std::chrono::steady_clock::now();
+    if (status == "Stopped") {
+        title.clear();
+        artist.clear();
+        player_name.clear();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_title != title || m_artist != artist) {
+            m_anim_start_time = std::chrono::steady_clock::now();
+        }
+        m_status = status;
+        m_player_name = player_name;
+        m_artist = artist;
+        m_title = title;
     }
 }
 
 void MediaModule::update() {
-    query_mpris();
+    trigger_async_query();
 }
 
 void MediaModule::play_pause() {
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_status == "Playing") m_status = "Paused";
+        else if (m_status == "Paused") m_status = "Playing";
+    }
     std::system("playerctl play-pause 2>/dev/null &");
-    query_mpris();
+    trigger_async_query();
 }
 
 void MediaModule::next_track() {
     std::system("playerctl next 2>/dev/null &");
-    query_mpris();
+    trigger_async_query();
 }
 
 void MediaModule::prev_track() {
     std::system("playerctl previous 2>/dev/null &");
-    query_mpris();
+    trigger_async_query();
 }
 
 void MediaModule::draw_compact(cairo_t* cr, PangoFontDescription* font_desc, const Config& config, int& current_x, int y, int h, std::vector<HitBox>& hitboxes) {
-    if (m_title.empty()) return;
+    std::string cur_title;
+    std::string cur_status;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        cur_title = m_title;
+        cur_status = m_status;
+    }
+    if (cur_title.empty()) return;
 
-    std::string display_title = m_title;
+    std::string display_title = cur_title;
     int max_len = config.max_media_title_length > 0 ? config.max_media_title_length : 28;
     if (g_utf8_validate(display_title.c_str(), -1, nullptr)) {
         glong char_count = g_utf8_strlen(display_title.c_str(), -1);
@@ -125,7 +173,7 @@ void MediaModule::draw_compact(cairo_t* cr, PangoFontDescription* font_desc, con
         }
     }
 
-    std::string icon = (m_status == "Playing") ? "󰝚 " : "󰝛 ";
+    std::string icon = (cur_status == "Playing") ? "󰝚 " : "󰝛 ";
     std::string text = icon + display_title;
 
     PangoLayout* layout = pango_cairo_create_layout(cr);
@@ -135,7 +183,7 @@ void MediaModule::draw_compact(cairo_t* cr, PangoFontDescription* font_desc, con
     int tw, th;
     pango_layout_get_pixel_size(layout, &tw, &th);
 
-    if (m_status == "Playing") {
+    if (cur_status == "Playing") {
         cairo_set_source_rgba(cr, config.colors.accent.r, config.colors.accent.g, config.colors.accent.b, 0.95);
     } else {
         cairo_set_source_rgba(cr, config.colors.subtext.r, config.colors.subtext.g, config.colors.subtext.b, 0.75);
@@ -254,21 +302,33 @@ void MediaModule::draw_marquee_text(
 }
 
 void MediaModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, const Config& config, int w, int h, std::vector<HitBox>& hitboxes) {
+    std::string cur_status;
+    std::string cur_player_name;
+    std::string cur_title;
+    std::string cur_artist;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        cur_status = m_status;
+        cur_player_name = m_player_name;
+        cur_title = m_title;
+        cur_artist = m_artist;
+    }
+
     PangoLayout* layout = pango_cairo_create_layout(cr);
 
     // 1. Header Pill (Centered at top)
     std::string badge_text;
-    if (m_status == "Playing") {
-        if (!m_player_name.empty()) {
-            std::string pname = m_player_name;
+    if (cur_status == "Playing") {
+        if (!cur_player_name.empty()) {
+            std::string pname = cur_player_name;
             std::transform(pname.begin(), pname.end(), pname.begin(), ::toupper);
             badge_text = "󰝚 " + pname + " • NOW PLAYING";
         } else {
             badge_text = "󰝚 NOW PLAYING";
         }
-    } else if (m_status == "Paused") {
-        if (!m_player_name.empty()) {
-            std::string pname = m_player_name;
+    } else if (cur_status == "Paused") {
+        if (!cur_player_name.empty()) {
+            std::string pname = cur_player_name;
             std::transform(pname.begin(), pname.end(), pname.begin(), ::toupper);
             badge_text = "󰝛 " + pname + " • PAUSED";
         } else {
@@ -299,7 +359,7 @@ void MediaModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, co
     cairo_arc(cr, pill_x + pill_w - pill_r, pill_y + pill_r, pill_r, -M_PI / 2, M_PI / 2);
     cairo_close_path(cr);
 
-    if (m_status == "Playing") {
+    if (cur_status == "Playing") {
         cairo_set_source_rgba(cr, config.colors.accent.r, config.colors.accent.g, config.colors.accent.b, 0.15);
     } else {
         cairo_set_source_rgba(cr, config.colors.subtext.r, config.colors.subtext.g, config.colors.subtext.b, 0.12);
@@ -307,7 +367,7 @@ void MediaModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, co
     cairo_fill_preserve(cr);
 
     // Pill 1px border
-    if (m_status == "Playing") {
+    if (cur_status == "Playing") {
         cairo_set_source_rgba(cr, config.colors.accent.r, config.colors.accent.g, config.colors.accent.b, 0.35);
     } else {
         cairo_set_source_rgba(cr, config.colors.subtext.r, config.colors.subtext.g, config.colors.subtext.b, 0.25);
@@ -316,7 +376,7 @@ void MediaModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, co
     cairo_stroke(cr);
 
     // Pill text
-    if (m_status == "Playing") {
+    if (cur_status == "Playing") {
         cairo_set_source_rgba(cr, config.colors.accent.r, config.colors.accent.g, config.colors.accent.b, 1.0);
     } else {
         cairo_set_source_rgba(cr, config.colors.subtext.r, config.colors.subtext.g, config.colors.subtext.b, 0.9);
@@ -325,12 +385,12 @@ void MediaModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, co
     pango_cairo_show_layout(cr, layout);
 
     // 2. Title (Bold, Centered or Smooth Ping-Pong Marquee)
-    std::string disp_title = m_title.empty() ? "No Media Playing" : m_title;
+    std::string disp_title = cur_title.empty() ? "No Media Playing" : cur_title;
     bool title_overflow = false;
     draw_marquee_text(cr, font_desc, disp_title, 20, w - 40, 36, config.colors.text, true, title_overflow);
 
     // 3. Artist (Regular, Centered or Smooth Ping-Pong Marquee)
-    std::string disp_artist = m_artist.empty() ? (m_title.empty() ? "Start playing music or video" : "Unknown Artist") : m_artist;
+    std::string disp_artist = cur_artist.empty() ? (cur_title.empty() ? "Start playing music or video" : "Unknown Artist") : cur_artist;
     bool artist_overflow = false;
     ColorRGBA artist_color = config.colors.subtext;
     artist_color.a = 0.85;
@@ -359,7 +419,7 @@ void MediaModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, co
         cairo_arc(cr, bx + r, btn_y + btn_h - r, r, M_PI / 2, M_PI);
         cairo_close_path(cr);
 
-        if (is_primary && m_status == "Playing") {
+        if (is_primary && cur_status == "Playing") {
             // Vibrant accent button for active play/pause
             cairo_set_source_rgba(cr, config.colors.accent.r, config.colors.accent.g, config.colors.accent.b, 0.95);
             cairo_fill_preserve(cr);
@@ -382,7 +442,7 @@ void MediaModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, co
         int ic_w, ic_h;
         pango_layout_get_pixel_size(layout, &ic_w, &ic_h);
 
-        if (is_primary && m_status == "Playing") {
+        if (is_primary && cur_status == "Playing") {
             // Dark icon on light/accent button for maximum contrast
             cairo_set_source_rgba(cr, 0.08, 0.08, 0.10, 1.0);
         } else {
@@ -396,7 +456,7 @@ void MediaModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, co
     };
 
     draw_button(prev_x, nav_w, 10.0, "󰒮", "media_prev", false);
-    draw_button(play_x, play_w, 14.0, (m_status == "Playing" ? "󰏤" : "󰐊"), "media_toggle", true);
+    draw_button(play_x, play_w, 14.0, (cur_status == "Playing" ? "󰏤" : "󰐊"), "media_toggle", true);
     draw_button(next_x, nav_w, 10.0, "󰒭", "media_next", false);
 
     g_object_unref(layout);

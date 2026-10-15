@@ -1,4 +1,5 @@
 #include "window_module.hpp"
+#include "../hyprland_ipc.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
@@ -15,15 +16,11 @@ void WindowModule::refresh_active_window() {
     m_class.clear();
     m_title.clear();
 
-    FILE* fp = popen("hyprctl activewindow -j 2>/dev/null", "r");
-    if (!fp) return;
-
-    char buffer[256];
-    std::string result;
-    while (fgets(buffer, sizeof(buffer), fp) != nullptr) {
-        result += buffer;
+    std::string result = HyprlandIpc::request("j/activewindow");
+    if (result.empty()) {
+        m_cached_icon = get_app_icon(m_class, m_title);
+        return;
     }
-    pclose(fp);
 
     size_t class_pos = result.find("\"class\":");
     if (class_pos != std::string::npos) {
@@ -42,11 +39,14 @@ void WindowModule::refresh_active_window() {
             m_title = result.substr(start + 1, end - start - 1);
         }
     }
+
+    m_cached_icon = get_app_icon(m_class, m_title);
 }
 
 void WindowModule::set_active_window(const std::string& app_class, const std::string& app_title) {
     m_class = app_class;
     m_title = app_title;
+    m_cached_icon = get_app_icon(m_class, m_title);
 }
 
 void WindowModule::update() {
@@ -259,7 +259,7 @@ void WindowModule::draw_compact(cairo_t* cr, PangoFontDescription* font_desc, co
         return;
     }
 
-    std::string icon = get_app_icon(m_class, m_title);
+    const std::string& icon = m_cached_icon.empty() ? (m_cached_icon = get_app_icon(m_class, m_title)) : m_cached_icon;
     std::string display_text = icon;
     if (config.window_display_mode == "both") {
         std::string name = m_class.empty() ? m_title : m_class;

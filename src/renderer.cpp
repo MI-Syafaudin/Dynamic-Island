@@ -239,10 +239,7 @@ void Renderer::render_island(
                 break;
             case IslandMode::Expanded_Alarm:
                 if (modules.size() > 0 && modules[0]) { // ClockModule
-                    auto clock_mod = std::dynamic_pointer_cast<ClockModule>(modules[0]);
-                    if (clock_mod) {
-                        clock_mod->draw_alarm_expanded(cr, m_font_desc, config, width, height, hitboxes);
-                    }
+                    modules[0]->draw_alarm_expanded(cr, m_font_desc, config, width, height, hitboxes);
                 }
                 break;
             case IslandMode::Expanded_BatteryAlert:

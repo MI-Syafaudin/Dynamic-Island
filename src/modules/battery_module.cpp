@@ -133,7 +133,7 @@ BatteryStatusInfo BatteryModule::get_status_info(const Config& config, int displ
     return info;
 }
 
-void BatteryModule::get_preferred_dimensions(PangoFontDescription* font_desc, const Config& config, double& w, double& h) {
+void BatteryModule::get_preferred_dimensions(PangoFontDescription* font_desc, const Config& config, double& w, double& h, cairo_t* cr) {
     bool free_desc = false;
     if (!font_desc) {
         std::string font_spec = config.font_family + " " + std::to_string(config.font_size);
@@ -141,8 +141,13 @@ void BatteryModule::get_preferred_dimensions(PangoFontDescription* font_desc, co
         free_desc = true;
     }
 
-    cairo_surface_t* surface = cairo_recording_surface_create(CAIRO_CONTENT_COLOR_ALPHA, nullptr);
-    cairo_t* cr = cairo_create(surface);
+    bool destroy_cr = false;
+    cairo_surface_t* temp_surface = nullptr;
+    if (!cr) {
+        temp_surface = cairo_image_surface_create(CAIRO_FORMAT_A8, 1, 1);
+        cr = cairo_create(temp_surface);
+        destroy_cr = true;
+    }
     PangoLayout* layout = pango_cairo_create_layout(cr);
 
     int display_pct = (m_alert_level > 0 && (m_alarm_active || m_test_mode)) ? m_alert_level : m_percentage;
@@ -166,8 +171,10 @@ void BatteryModule::get_preferred_dimensions(PangoFontDescription* font_desc, co
     pango_layout_get_pixel_size(layout, &sw, &sh);
 
     g_object_unref(layout);
-    cairo_destroy(cr);
-    cairo_surface_destroy(surface);
+    if (destroy_cr) {
+        cairo_destroy(cr);
+        cairo_surface_destroy(temp_surface);
+    }
 
     if (free_desc && font_desc) {
         pango_font_description_free(font_desc);

@@ -1,4 +1,5 @@
 #include "workspace_module.hpp"
+#include "../hyprland_ipc.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
@@ -22,18 +23,11 @@ void WorkspaceModule::update_visible_workspaces() {
 }
 
 void WorkspaceModule::refresh_active_workspace() {
-    FILE* fp = popen("hyprctl activeworkspace -j 2>/dev/null", "r");
-    if (!fp) {
+    std::string result = HyprlandIpc::request("j/activeworkspace");
+    if (result.empty()) {
         update_visible_workspaces();
         return;
     }
-
-    char buffer[256];
-    std::string result;
-    while (fgets(buffer, sizeof(buffer), fp) != nullptr) {
-        result += buffer;
-    }
-    pclose(fp);
 
     size_t id_pos = result.find("\"id\":");
     if (id_pos != std::string::npos) {
@@ -104,8 +98,7 @@ void WorkspaceModule::draw_compact(cairo_t* cr, PangoFontDescription* font_desc,
 
 bool WorkspaceModule::handle_click(const std::string& action, const std::string& param) {
     if (action == "workspace") {
-        std::string cmd = "hyprctl dispatch workspace " + param + " >/dev/null 2>&1 &";
-        std::system(cmd.c_str());
+        HyprlandIpc::request("dispatch workspace " + param);
         return true;
     }
     return false;

@@ -37,13 +37,33 @@ public:
     virtual ~ModuleBase() = default;
     virtual void update() = 0;
     virtual void draw_compact(cairo_t* cr, PangoFontDescription* font_desc, const Config& config, int& current_x, int y, int h, std::vector<HitBox>& hitboxes) = 0;
-    virtual void draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, const Config& config, int w, int h, std::vector<HitBox>& hitboxes) {}
-    virtual bool handle_click(const std::string& action, const std::string& param) { return false; }
-    virtual void get_preferred_dimensions(PangoFontDescription* font_desc, const Config& config, double& w, double& h) {
+    virtual void draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, const Config& config, int w, int h, std::vector<HitBox>& hitboxes) {
+        (void)cr;
         (void)font_desc;
         (void)config;
         (void)w;
         (void)h;
+        (void)hitboxes;
+    }
+    virtual void draw_alarm_expanded(cairo_t* cr, PangoFontDescription* font_desc, const Config& config, int w, int h, std::vector<HitBox>& hitboxes) {
+        (void)cr;
+        (void)font_desc;
+        (void)config;
+        (void)w;
+        (void)h;
+        (void)hitboxes;
+    }
+    virtual bool handle_click(const std::string& action, const std::string& param) {
+        (void)action;
+        (void)param;
+        return false;
+    }
+    virtual void get_preferred_dimensions(PangoFontDescription* font_desc, const Config& config, double& w, double& h, cairo_t* cr = nullptr) {
+        (void)font_desc;
+        (void)config;
+        (void)w;
+        (void)h;
+        (void)cr;
     }
 };
 

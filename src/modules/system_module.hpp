@@ -7,6 +7,7 @@ namespace di {
 class SystemModule : public ModuleBase {
 public:
     SystemModule();
+    ~SystemModule() override;
     void update() override { update(false); }
     void update(bool full);
     void draw_compact(cairo_t* cr, PangoFontDescription* font_desc, const Config& config, int& current_x, int y, int h, std::vector<HitBox>& hitboxes) override;
@@ -38,6 +39,10 @@ private:
     std::string m_intel_act_freq_path;
     std::string m_intel_max_freq_path;
     std::string m_gpu_name = "(Radeon Vega 3)";
+
+    int m_fd_stat = -1;
+    int m_fd_meminfo = -1;
+    int m_fd_temp = -1;
 
     void update_cpu();
     void update_ram();

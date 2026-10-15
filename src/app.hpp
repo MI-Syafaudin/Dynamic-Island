@@ -95,6 +95,8 @@ private:
     std::chrono::steady_clock::time_point m_last_network_update;
 
     int m_brightness_val = 65;
+    std::string m_backlight_path;
+    int m_backlight_max = 0;
     bool m_is_fullscreen = false;
 
     // Audio alarm process

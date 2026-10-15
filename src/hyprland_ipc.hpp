@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <functional>
 
 namespace di {
@@ -23,6 +24,8 @@ public:
     void set_fullscreen_callback(FullscreenCallback cb) { m_on_fullscreen = cb; }
 
     void process_incoming();
+
+    static std::string request(std::string_view cmd);
 
 private:
     int m_fd = -1;

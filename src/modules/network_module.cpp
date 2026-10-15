@@ -31,7 +31,8 @@ NetworkModule::~NetworkModule() {
 }
 
 void NetworkModule::query_local_ip() {
-    m_ip = "127.0.0.1";
+    std::string ip = "127.0.0.1";
+    std::string iface;
     struct ifaddrs* ifaddr = nullptr;
     if (getifaddrs(&ifaddr) == -1) return;
 
@@ -42,12 +43,16 @@ void NetworkModule::query_local_ip() {
         char host[NI_MAXHOST];
         int s = getnameinfo(ifa->ifa_addr, sizeof(struct sockaddr_in), host, NI_MAXHOST, nullptr, 0, NI_NUMERICHOST);
         if (s == 0) {
-            m_ip = host;
-            m_interface = ifa->ifa_name;
+            ip = host;
+            iface = ifa->ifa_name;
             break;
         }
     }
     freeifaddrs(ifaddr);
+
+    std::lock_guard<std::mutex> lock(m_metrics_mutex);
+    m_ip = ip;
+    if (!iface.empty()) m_interface = iface;
 }
 
 void NetworkModule::query_network() {
@@ -55,6 +60,7 @@ void NetworkModule::query_network() {
 
     // Fast-path: Check default route in /proc/net/route without spawning any processes
     bool has_default_gateway = false;
+    std::string detected_iface;
     std::string detected_gw;
     FILE* fr = fopen("/proc/net/route", "r");
     if (fr) {
@@ -66,7 +72,7 @@ void NetworkModule::query_network() {
             if (sscanf(rline, "%31s %lx %lx", iface, &dest, &gw) >= 2) {
                 if (dest == 0 && strcmp(iface, "lo") != 0) {
                     has_default_gateway = true;
-                    m_interface = iface;
+                    detected_iface = iface;
                     if (gw != 0) {
                         struct in_addr in;
                         in.s_addr = gw;
@@ -80,9 +86,9 @@ void NetworkModule::query_network() {
         fclose(fr);
     }
 
-    m_gateway_ip = detected_gw;
-
     if (!has_default_gateway) {
+        std::lock_guard<std::mutex> lock(m_metrics_mutex);
+        m_gateway_ip = detected_gw;
         m_connected = false;
         m_is_wifi = false;
         m_ssid.clear();
@@ -90,10 +96,15 @@ void NetworkModule::query_network() {
         return;
     }
 
-    // If already connected and gateway status hasn't changed, query nmcli only every 30s
-    if (m_connected && m_had_gateway && !m_ssid.empty() &&
-        std::chrono::duration_cast<std::chrono::seconds>(now - m_last_nmcli_query).count() < 30) {
-        return;
+    {
+        std::lock_guard<std::mutex> lock(m_metrics_mutex);
+        m_gateway_ip = detected_gw;
+        if (!detected_iface.empty()) m_interface = detected_iface;
+        // If already connected and gateway status hasn't changed, query nmcli only every 30s
+        if (m_connected && m_had_gateway && !m_ssid.empty() &&
+            std::chrono::duration_cast<std::chrono::seconds>(now - m_last_nmcli_query).count() < 30) {
+            return;
+        }
     }
 
     m_had_gateway = true;
@@ -103,9 +114,9 @@ void NetworkModule::query_network() {
     if (!fp) return;
 
     char buffer[256];
-    m_connected = false;
-    m_is_wifi = false;
-    m_ssid.clear();
+    bool conn = false;
+    bool is_wf = false;
+    std::string ssid;
 
     while (fgets(buffer, sizeof(buffer), fp) != nullptr) {
         std::string line = buffer;
@@ -113,31 +124,47 @@ void NetworkModule::query_network() {
 
         // format: type:state:connection
         if (line.find("wifi:connected:") == 0) {
-            m_connected = true;
-            m_is_wifi = true;
-            m_ssid = line.substr(15);
+            conn = true;
+            is_wf = true;
+            ssid = line.substr(15);
             break;
         } else if (line.find("ethernet:connected:") == 0) {
-            m_connected = true;
-            m_is_wifi = false;
-            m_ssid = "Ethernet";
+            conn = true;
+            is_wf = false;
+            ssid = "Ethernet";
             break;
         }
     }
     pclose(fp);
 
-    if (m_connected) {
+    {
+        std::lock_guard<std::mutex> lock(m_metrics_mutex);
+        m_connected = conn;
+        m_is_wifi = is_wf;
+        m_ssid = ssid;
+    }
+
+    if (conn) {
         query_local_ip();
         query_wifi_signal();
     }
 }
 
 void NetworkModule::update() {
-    query_network();
+    // Non-blocking from main thread: worker thread performs all network/ping queries
+    std::lock_guard<std::mutex> lock(m_thread_mutex);
+    m_thread_cv.notify_one();
 }
 
 void NetworkModule::draw_compact(cairo_t* cr, PangoFontDescription* font_desc, const Config& config, int& current_x, int y, int h, std::vector<HitBox>& hitboxes) {
-    std::string icon = m_connected ? (m_is_wifi ? "󰖩" : "󰈀") : "󰖪";
+    bool conn = false;
+    bool is_wf = false;
+    {
+        std::lock_guard<std::mutex> lock(m_metrics_mutex);
+        conn = m_connected;
+        is_wf = m_is_wifi;
+    }
+    std::string icon = conn ? (is_wf ? "󰖩" : "󰈀") : "󰖪";
 
     PangoLayout* layout = pango_cairo_create_layout(cr);
     pango_layout_set_font_description(layout, font_desc);
@@ -174,6 +201,12 @@ void NetworkModule::query_bandwidth() {
     if (!fgets(line, sizeof(line), fp)) { fclose(fp); return; }
     if (!fgets(line, sizeof(line), fp)) { fclose(fp); return; }
 
+    std::string iface_target;
+    {
+        std::lock_guard<std::mutex> lock(m_metrics_mutex);
+        iface_target = m_interface;
+    }
+
     while (fgets(line, sizeof(line), fp)) {
         char* colon = strchr(line, ':');
         if (!colon) continue;
@@ -182,7 +215,7 @@ void NetworkModule::query_bandwidth() {
         char* p = line;
         while (*p == ' ') p++;
 
-        if (m_interface.empty() || strcmp(p, m_interface.c_str()) == 0) {
+        if (iface_target.empty() || strcmp(p, iface_target.c_str()) == 0) {
             unsigned long long r_b = 0, r_p = 0, r_e = 0, r_d = 0, r_f = 0, r_fr = 0, r_c = 0, r_m = 0;
             unsigned long long t_b = 0;
             if (sscanf(colon + 1, "%llu %llu %llu %llu %llu %llu %llu %llu %llu",
@@ -215,7 +248,12 @@ void NetworkModule::query_bandwidth() {
 }
 
 void NetworkModule::query_wifi_signal() {
-    if (!m_is_wifi) {
+    bool is_wf = false;
+    {
+        std::lock_guard<std::mutex> lock(m_metrics_mutex);
+        is_wf = m_is_wifi;
+    }
+    if (!is_wf) {
         std::lock_guard<std::mutex> lock(m_metrics_mutex);
         m_wifi_signal_pct = 0;
         m_wifi_signal_dbm = 0;
@@ -252,9 +290,14 @@ void NetworkModule::query_wifi_signal() {
 }
 
 void NetworkModule::measure_gateway_ping() {
-    if (m_gateway_ip.empty()) return;
+    std::string gw;
+    {
+        std::lock_guard<std::mutex> lock(m_metrics_mutex);
+        gw = m_gateway_ip;
+    }
+    if (gw.empty()) return;
 
-    std::string cmd = "ping -c 1 -W 1 " + m_gateway_ip + " 2>/dev/null";
+    std::string cmd = "ping -c 1 -W 1 " + gw + " 2>/dev/null";
     FILE* fp = popen(cmd.c_str(), "r");
     double gw_rtt = 0.0;
     bool success = false;
@@ -292,28 +335,35 @@ void NetworkModule::worker_loop() {
             active = m_is_active;
         }
 
-        if (m_connected) {
-            query_bandwidth();
-            query_wifi_signal();
-            measure_ping();
-            measure_gateway_ping();
-            m_dirty = true;
-        } else {
-            std::lock_guard<std::mutex> lock(m_metrics_mutex);
-            m_ping_history.clear();
-            m_ping = 0.0;
-            m_jitter = 0.0;
-            m_packet_loss = 100.0;
-            m_has_ping_data = true;
-            m_gateway_ping = 0.0;
-            m_download_speed = 0.0;
-            m_upload_speed = 0.0;
-            m_wifi_signal_pct = 0;
-            m_wifi_signal_dbm = 0;
-            m_dirty = true;
-        }
+        // Query basic connection state safely in background thread
+        query_network();
 
         if (active) {
+            bool conn = false;
+            {
+                std::lock_guard<std::mutex> lock(m_metrics_mutex);
+                conn = m_connected;
+            }
+            if (conn) {
+                query_bandwidth();
+                query_wifi_signal();
+                measure_ping();
+                measure_gateway_ping();
+            } else {
+                std::lock_guard<std::mutex> lock(m_metrics_mutex);
+                m_ping_history.clear();
+                m_ping = 0.0;
+                m_jitter = 0.0;
+                m_packet_loss = 100.0;
+                m_has_ping_data = true;
+                m_gateway_ping = 0.0;
+                m_download_speed = 0.0;
+                m_upload_speed = 0.0;
+                m_wifi_signal_pct = 0;
+                m_wifi_signal_dbm = 0;
+            }
+            m_dirty = true;
+
             std::unique_lock<std::mutex> lock(m_thread_mutex);
             m_thread_cv.wait_for(lock, std::chrono::milliseconds(600), [this]() {
                 return !m_worker_running || !m_is_active;
@@ -430,9 +480,10 @@ void NetworkModule::on_collapsed() {
     m_thread_cv.notify_all();
 }
 
-void NetworkModule::get_preferred_dimensions(PangoFontDescription* font_desc, const Config& config, double& w, double& h) {
+void NetworkModule::get_preferred_dimensions(PangoFontDescription* font_desc, const Config& config, double& w, double& h, cairo_t* cr) {
     (void)font_desc;
     (void)config;
+    (void)cr;
     w = 380.0;
     h = 170.0;
 }
@@ -494,7 +545,7 @@ int NetworkModule::get_wifi_signal() const {
 void NetworkModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, const Config& config, int w, int h, std::vector<HitBox>& hitboxes) {
     PangoLayout* layout = pango_cairo_create_layout(cr);
 
-    // Snapshot metrics under lock
+    // Snapshot metrics and network state under lock
     double ping_val = 0.0;
     double jitter_val = 0.0;
     double loss_val = 0.0;
@@ -504,6 +555,12 @@ void NetworkModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, 
     int wifi_sig = 0;
     int wifi_dbm = 0;
     bool has_data = false;
+    bool is_conn = false;
+    bool is_wf = false;
+    std::string cur_ssid;
+    std::string cur_ip;
+    std::string cur_iface;
+    std::string cur_gw;
     {
         std::lock_guard<std::mutex> lock(m_metrics_mutex);
         ping_val = m_ping;
@@ -515,14 +572,20 @@ void NetworkModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, 
         wifi_sig = m_wifi_signal_pct;
         wifi_dbm = m_wifi_signal_dbm;
         has_data = m_has_ping_data;
+        is_conn = m_connected;
+        is_wf = m_is_wifi;
+        cur_ssid = m_ssid;
+        cur_ip = m_ip;
+        cur_iface = m_interface;
+        cur_gw = m_gateway_ip;
     }
 
     // 1. Title Row: Left (SSID / Status), Right (Wi-Fi Signal Badge)
     std::string title_left;
     ColorRGBA title_left_col = config.colors.accent_blue;
-    if (m_connected) {
-        if (m_is_wifi) {
-            title_left = "󰖩 " + (m_ssid.empty() ? "Wi-Fi" : m_ssid);
+    if (is_conn) {
+        if (is_wf) {
+            title_left = "󰖩 " + (cur_ssid.empty() ? "Wi-Fi" : cur_ssid);
         } else {
             title_left = "󰈀 Ethernet Terhubung";
         }
@@ -544,7 +607,7 @@ void NetworkModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, 
     pango_font_description_free(title_desc);
 
     // Title Right: Signal strength badge (if Wi-Fi)
-    if (m_connected && m_is_wifi && wifi_sig > 0) {
+    if (is_conn && is_wf && wifi_sig > 0) {
         PangoFontDescription* sig_desc = pango_font_description_copy(font_desc);
         pango_font_description_set_size(sig_desc, 9 * PANGO_SCALE);
         pango_font_description_set_weight(sig_desc, PANGO_WEIGHT_BOLD);
@@ -569,8 +632,8 @@ void NetworkModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, 
     pango_font_description_set_size(sub_desc, 8.5 * PANGO_SCALE);
     pango_layout_set_font_description(layout, sub_desc);
 
-    if (m_connected) {
-        std::string ip_left = "󰩟 " + m_ip + " (" + (m_interface.empty() ? "wlan0" : m_interface) + ")";
+    if (is_conn) {
+        std::string ip_left = "󰩟 " + cur_ip + " (" + (cur_iface.empty() ? "wlan0" : cur_iface) + ")";
         pango_layout_set_width(layout, 220 * PANGO_SCALE);
         pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
         pango_layout_set_text(layout, ip_left.c_str(), -1);
@@ -578,8 +641,8 @@ void NetworkModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, 
         cairo_move_to(cr, 16, 30);
         pango_cairo_show_layout(cr, layout);
 
-        if (!m_gateway_ip.empty()) {
-            std::string gw_right = "󰌘 GW: " + m_gateway_ip;
+        if (!cur_gw.empty()) {
+            std::string gw_right = "󰌘 GW: " + cur_gw;
             pango_layout_set_width(layout, -1);
             pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_NONE);
             pango_layout_set_text(layout, gw_right.c_str(), -1);

@@ -5,11 +5,28 @@
 #include <csignal>
 #include <unistd.h>
 #include <iostream>
+#include <fstream>
+#include <filesystem>
 #include <cmath>
 #include <algorithm>
 #include <linux/input-event-codes.h>
 
 namespace di {
+
+static void run_brightnessctl_async(const std::string& val_str) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+        execlp("brightnessctl", "brightnessctl", "set", val_str.c_str(), "-q", (char*)nullptr);
+        _exit(1);
+    }
+}
 
 App::App() {}
 
@@ -210,6 +227,25 @@ bool App::init(const std::string& config_path) {
 
     m_ipc_server.start();
 
+    // Detect sysfs backlight device for instant, zero-fork brightness reading
+    m_backlight_path.clear();
+    m_backlight_max = 0;
+    if (std::filesystem::exists("/sys/class/backlight")) {
+        for (const auto& entry : std::filesystem::directory_iterator("/sys/class/backlight")) {
+            std::string max_p = (entry.path() / "max_brightness").string();
+            std::string cur_p = (entry.path() / "brightness").string();
+            if (std::filesystem::exists(max_p) && std::filesystem::exists(cur_p)) {
+                std::ifstream mf(max_p);
+                int max_val = 0;
+                if (mf >> max_val && max_val > 0) {
+                    m_backlight_path = entry.path().string();
+                    m_backlight_max = max_val;
+                    break;
+                }
+            }
+        }
+    }
+
     setup_callbacks();
     query_brightness();
 
@@ -224,6 +260,16 @@ bool App::init(const std::string& config_path) {
 }
 
 void App::query_brightness() {
+    if (!m_backlight_path.empty() && m_backlight_max > 0) {
+        std::string cur_p = m_backlight_path + "/brightness";
+        std::ifstream bf(cur_p);
+        int cur_val = 0;
+        if (bf >> cur_val) {
+            m_brightness_val = std::clamp(static_cast<int>(std::round((cur_val * 100.0) / m_backlight_max)), 0, 100);
+            return;
+        }
+    }
+
     FILE* fp = popen("brightnessctl -m 2>/dev/null", "r");
     if (!fp) return;
 
@@ -243,27 +289,11 @@ void App::query_brightness() {
 }
 
 void App::set_brightness(int delta_percent) {
-    std::string cmd = (delta_percent >= 0)
-        ? "brightnessctl set " + std::to_string(delta_percent) + "%+ -m 2>/dev/null"
-        : "brightnessctl set " + std::to_string(-delta_percent) + "%- -m 2>/dev/null";
-
-    FILE* fp = popen(cmd.c_str(), "r");
-    if (fp) {
-        char buffer[128];
-        if (fgets(buffer, sizeof(buffer), fp) != nullptr) {
-            std::string line = buffer;
-            size_t pct_pos = line.find('%');
-            if (pct_pos != std::string::npos) {
-                size_t comma = line.rfind(',', pct_pos);
-                if (comma != std::string::npos) {
-                    m_brightness_val = std::atoi(line.substr(comma + 1, pct_pos - comma - 1).c_str());
-                }
-            }
-        }
-        pclose(fp);
-    } else {
-        query_brightness();
-    }
+    m_brightness_val = std::clamp(m_brightness_val + delta_percent, 1, 100);
+    std::string val_str = (delta_percent >= 0)
+        ? std::to_string(delta_percent) + "%+"
+        : std::to_string(-delta_percent) + "%-";
+    run_brightnessctl_async(val_str);
     expand_to(IslandMode::Expanded_Brightness, m_config.timeouts.brightness_ms);
 }
 
@@ -387,7 +417,7 @@ void App::get_target_dimensions(IslandMode mode, double& w, double& h) {
             break;
         case IslandMode::Expanded_BatteryAlert:
             if (m_bat_mod) {
-                m_bat_mod->get_preferred_dimensions(m_renderer.get_font_desc(), m_config, w, h);
+                m_bat_mod->get_preferred_dimensions(m_renderer.get_font_desc(), m_config, w, h, m_renderer.get_measure_cr());
             } else {
                 w = 420.0;
                 h = 64.0;
@@ -395,7 +425,7 @@ void App::get_target_dimensions(IslandMode mode, double& w, double& h) {
             break;
         case IslandMode::Expanded_Network:
             if (m_net_mod) {
-                m_net_mod->get_preferred_dimensions(m_renderer.get_font_desc(), m_config, w, h);
+                m_net_mod->get_preferred_dimensions(m_renderer.get_font_desc(), m_config, w, h, m_renderer.get_measure_cr());
             } else {
                 w = 380.0;
                 h = 170.0;
@@ -403,7 +433,7 @@ void App::get_target_dimensions(IslandMode mode, double& w, double& h) {
             break;
         case IslandMode::Expanded_Notification:
             if (m_notif_mod) {
-                m_notif_mod->get_preferred_dimensions(m_renderer.get_font_desc(), m_config, w, h);
+                m_notif_mod->get_preferred_dimensions(m_renderer.get_font_desc(), m_config, w, h, m_renderer.get_measure_cr());
             } else {
                 w = 360.0;
                 h = 66.0;
@@ -411,7 +441,7 @@ void App::get_target_dimensions(IslandMode mode, double& w, double& h) {
             break;
         case IslandMode::Expanded_Screenshot:
             if (m_shot_mod) {
-                m_shot_mod->get_preferred_dimensions(m_renderer.get_font_desc(), m_config, w, h);
+                m_shot_mod->get_preferred_dimensions(m_renderer.get_font_desc(), m_config, w, h, m_renderer.get_measure_cr());
             } else {
                 w = 360.0;
                 h = 64.0;
@@ -419,7 +449,7 @@ void App::get_target_dimensions(IslandMode mode, double& w, double& h) {
             break;
         case IslandMode::Expanded_QuickActions:
             if (m_quick_mod) {
-                m_quick_mod->get_preferred_dimensions(m_renderer.get_font_desc(), m_config, w, h);
+                m_quick_mod->get_preferred_dimensions(m_renderer.get_font_desc(), m_config, w, h, m_renderer.get_measure_cr());
             } else {
                 w = 540.0;
                 h = 76.0;
@@ -614,30 +644,15 @@ void App::on_mouse_button(double x, double y, uint32_t button, bool pressed) {
                 if (hb.action == "audio_set_volume") {
                     double pct = std::clamp((x - 20.0) / (m_curr_w - 40.0), 0.0, 1.0);
                     int vol = static_cast<int>(std::round(pct * 100.0));
-                    std::system(("wpctl set-volume @DEFAULT_AUDIO_SINK@ " + std::to_string(vol) + "% 2>/dev/null").c_str());
-                    if (m_audio_mod) m_audio_mod->update();
+                    if (m_audio_mod) m_audio_mod->set_volume(vol);
                     render_current_state();
                     return;
                 }
                 if (hb.action == "brightness_set") {
                     double pct = std::clamp((x - 20.0) / (m_curr_w - 40.0), 0.05, 1.0);
                     int br = static_cast<int>(std::round(pct * 100.0));
-                    std::string cmd = "brightnessctl set " + std::to_string(br) + "% -m 2>/dev/null";
-                    FILE* fp = popen(cmd.c_str(), "r");
-                    if (fp) {
-                        char buffer[128];
-                        if (fgets(buffer, sizeof(buffer), fp) != nullptr) {
-                            std::string line = buffer;
-                            size_t pct_pos = line.find('%');
-                            if (pct_pos != std::string::npos) {
-                                size_t comma = line.rfind(',', pct_pos);
-                                if (comma != std::string::npos) {
-                                    m_brightness_val = std::atoi(line.substr(comma + 1, pct_pos - comma - 1).c_str());
-                                }
-                            }
-                        }
-                        pclose(fp);
-                    }
+                    m_brightness_val = br;
+                    run_brightnessctl_async(std::to_string(br) + "%");
                     render_current_state();
                     return;
                 }

@@ -6,10 +6,17 @@
 #include <filesystem>
 #include <algorithm>
 #include <thread>
+#include <fcntl.h>
+#include <unistd.h>
+#include <cstring>
 
 namespace di {
 
 SystemModule::SystemModule() {
+    m_fd_stat = open("/proc/stat", O_RDONLY | O_CLOEXEC);
+    m_fd_meminfo = open("/proc/meminfo", O_RDONLY | O_CLOEXEC);
+    m_fd_temp = open("/sys/class/thermal/thermal_zone0/temp", O_RDONLY | O_CLOEXEC);
+
     // Detect GPU busy percent path (AMD / generic DRM)
     if (std::filesystem::exists("/sys/class/drm")) {
         for (const auto& entry : std::filesystem::directory_iterator("/sys/class/drm")) {
@@ -76,69 +83,110 @@ SystemModule::SystemModule() {
     update_temp();
 }
 
+SystemModule::~SystemModule() {
+    if (m_fd_stat >= 0) {
+        close(m_fd_stat);
+        m_fd_stat = -1;
+    }
+    if (m_fd_meminfo >= 0) {
+        close(m_fd_meminfo);
+        m_fd_meminfo = -1;
+    }
+    if (m_fd_temp >= 0) {
+        close(m_fd_temp);
+        m_fd_temp = -1;
+    }
+}
+
 void SystemModule::update_cpu() {
-    FILE* file = fopen("/proc/stat", "r");
-    if (!file) return;
+    if (m_fd_stat < 0) {
+        m_fd_stat = open("/proc/stat", O_RDONLY | O_CLOEXEC);
+        if (m_fd_stat < 0) return;
+    }
 
-    char line[256];
-    if (fgets(line, sizeof(line), file)) {
-        if (strncmp(line, "cpu ", 4) == 0) {
-            unsigned long long user = 0, nice = 0, system = 0, idle = 0, iowait = 0, irq = 0, softirq = 0, steal = 0;
-            if (sscanf(line + 4, "%llu %llu %llu %llu %llu %llu %llu %llu",
-                       &user, &nice, &system, &idle, &iowait, &irq, &softirq, &steal) >= 4) {
-                unsigned long long work_jiffies = user + nice + system + irq + softirq + steal;
-                unsigned long long total_jiffies = work_jiffies + idle + iowait;
+    if (lseek(m_fd_stat, 0, SEEK_SET) == (off_t)-1) {
+        return;
+    }
 
-                if (m_prev_total_jiffies == 0) {
+    char buf[1024];
+    ssize_t bytes_read = read(m_fd_stat, buf, sizeof(buf) - 1);
+    if (bytes_read <= 0) return;
+    buf[bytes_read] = '\0';
+
+    char* line = buf;
+    char* eol = strchr(buf, '\n');
+    if (eol) *eol = '\0';
+
+    if (strncmp(line, "cpu ", 4) == 0) {
+        unsigned long long user = 0, nice = 0, system = 0, idle = 0, iowait = 0, irq = 0, softirq = 0, steal = 0;
+        if (sscanf(line + 4, "%llu %llu %llu %llu %llu %llu %llu %llu",
+                   &user, &nice, &system, &idle, &iowait, &irq, &softirq, &steal) >= 4) {
+            unsigned long long work_jiffies = user + nice + system + irq + softirq + steal;
+            unsigned long long total_jiffies = work_jiffies + idle + iowait;
+
+            if (m_prev_total_jiffies == 0) {
+                m_prev_total_jiffies = total_jiffies;
+                m_prev_work_jiffies = work_jiffies;
+                return;
+            }
+
+            if (total_jiffies > m_prev_total_jiffies) {
+                unsigned long long total_delta = total_jiffies - m_prev_total_jiffies;
+                if (total_delta >= 15) {
+                    unsigned long long work_delta = (work_jiffies >= m_prev_work_jiffies)
+                                                    ? (work_jiffies - m_prev_work_jiffies)
+                                                    : 0;
+                    int raw_cpu = std::clamp(static_cast<int>(std::round((work_delta * 100.0) / total_delta)), 0, 100);
+
+                    if (m_cpu_percent == 0) {
+                        m_cpu_percent = raw_cpu;
+                    } else {
+                        m_cpu_percent = std::clamp(static_cast<int>(std::round(0.70 * raw_cpu + 0.30 * m_cpu_percent)), 0, 100);
+                    }
+
                     m_prev_total_jiffies = total_jiffies;
                     m_prev_work_jiffies = work_jiffies;
-                    fclose(file);
-                    return;
-                }
-
-                if (total_jiffies > m_prev_total_jiffies) {
-                    unsigned long long total_delta = total_jiffies - m_prev_total_jiffies;
-                    if (total_delta >= 15) {
-                        unsigned long long work_delta = (work_jiffies >= m_prev_work_jiffies)
-                                                        ? (work_jiffies - m_prev_work_jiffies)
-                                                        : 0;
-                        int raw_cpu = std::clamp(static_cast<int>(std::round((work_delta * 100.0) / total_delta)), 0, 100);
-
-                        if (m_cpu_percent == 0) {
-                            m_cpu_percent = raw_cpu;
-                        } else {
-                            m_cpu_percent = std::clamp(static_cast<int>(std::round(0.70 * raw_cpu + 0.30 * m_cpu_percent)), 0, 100);
-                        }
-
-                        m_prev_total_jiffies = total_jiffies;
-                        m_prev_work_jiffies = work_jiffies;
-                    }
                 }
             }
         }
     }
-    fclose(file);
 }
 
 void SystemModule::update_ram() {
-    FILE* file = fopen("/proc/meminfo", "r");
-    if (!file) return;
+    if (m_fd_meminfo < 0) {
+        m_fd_meminfo = open("/proc/meminfo", O_RDONLY | O_CLOEXEC);
+        if (m_fd_meminfo < 0) return;
+    }
+
+    if (lseek(m_fd_meminfo, 0, SEEK_SET) == (off_t)-1) {
+        return;
+    }
+
+    char buf[2048];
+    ssize_t bytes_read = read(m_fd_meminfo, buf, sizeof(buf) - 1);
+    if (bytes_read <= 0) return;
+    buf[bytes_read] = '\0';
 
     unsigned long long mem_total_kb = 0;
     unsigned long long mem_avail_kb = 0;
     unsigned long long swap_total_kb = 0;
     unsigned long long swap_free_kb = 0;
 
-    char line[128];
-    while (fgets(line, sizeof(line), file)) {
-        if (strncmp(line, "MemTotal:", 9) == 0) sscanf(line + 9, "%llu", &mem_total_kb);
-        else if (strncmp(line, "MemAvailable:", 13) == 0) sscanf(line + 13, "%llu", &mem_avail_kb);
-        else if (strncmp(line, "SwapTotal:", 10) == 0) sscanf(line + 10, "%llu", &swap_total_kb);
-        else if (strncmp(line, "SwapFree:", 9) == 0) sscanf(line + 9, "%llu", &swap_free_kb);
+    char* cur = buf;
+    while (cur && *cur) {
+        char* next = strchr(cur, '\n');
+        if (next) *next = '\0';
+
+        if (strncmp(cur, "MemTotal:", 9) == 0) sscanf(cur + 9, "%llu", &mem_total_kb);
+        else if (strncmp(cur, "MemAvailable:", 13) == 0) sscanf(cur + 13, "%llu", &mem_avail_kb);
+        else if (strncmp(cur, "SwapTotal:", 10) == 0) sscanf(cur + 10, "%llu", &swap_total_kb);
+        else if (strncmp(cur, "SwapFree:", 9) == 0) sscanf(cur + 9, "%llu", &swap_free_kb);
 
         if (mem_total_kb > 0 && mem_avail_kb > 0 && swap_total_kb > 0 && swap_free_kb > 0) break;
+
+        if (next) cur = next + 1;
+        else break;
     }
-    fclose(file);
 
     if (mem_total_kb > 0) {
         unsigned long long mem_used_kb = (mem_total_kb >= mem_avail_kb) ? (mem_total_kb - mem_avail_kb) : 0;
@@ -192,13 +240,23 @@ void SystemModule::update_gpu() {
 }
 
 void SystemModule::update_temp() {
-    FILE* file = fopen("/sys/class/thermal/thermal_zone0/temp", "r");
-    if (file) {
+    if (m_fd_temp < 0) {
+        m_fd_temp = open("/sys/class/thermal/thermal_zone0/temp", O_RDONLY | O_CLOEXEC);
+        if (m_fd_temp < 0) return;
+    }
+
+    if (lseek(m_fd_temp, 0, SEEK_SET) == (off_t)-1) {
+        return;
+    }
+
+    char buf[64];
+    ssize_t bytes_read = read(m_fd_temp, buf, sizeof(buf) - 1);
+    if (bytes_read > 0) {
+        buf[bytes_read] = '\0';
         int millidegrees = 0;
-        if (fscanf(file, "%d", &millidegrees) == 1) {
+        if (sscanf(buf, "%d", &millidegrees) == 1) {
             m_cpu_temp = millidegrees / 1000;
         }
-        fclose(file);
     }
 }
 
