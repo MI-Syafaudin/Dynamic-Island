@@ -28,14 +28,29 @@ public:
     bool is_bt_active() const { return m_bt_active.load(); }
     bool is_mute_active() const { return m_mute_active.load(); }
 
+    std::string get_bt_icon() const {
+        std::lock_guard<std::mutex> lock(m_bt_info_mutex);
+        return m_bt_icon;
+    }
+    std::string get_bt_label() const {
+        std::lock_guard<std::mutex> lock(m_bt_info_mutex);
+        return m_bt_label;
+    }
+
     void set_dark_mode(bool enable);
+    void set_eye_comfort(bool enable);
 
 private:
+    std::string get_shader_path() const;
     std::atomic<bool> m_wifi_active{false};
     std::atomic<bool> m_bt_active{false};
     std::atomic<bool> m_mute_active{false};
     std::atomic<bool> m_dark_active{false};
     std::atomic<bool> m_night_active{false};
+
+    mutable std::mutex m_bt_info_mutex;
+    std::string m_bt_icon{"󰂲"};
+    std::string m_bt_label{"Bluetooth"};
 
     std::atomic<bool> m_updating{false};
     std::thread m_worker_thread;

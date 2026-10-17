@@ -1098,7 +1098,7 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
             } else if (sub == "off" || sub == "false" || sub == "0") {
                 m_quick_mod->set_dark_mode(false);
             } else {
-                m_quick_mod->handle_click("qa_dark", "");
+                m_quick_mod->set_dark_mode(!m_quick_mod->is_dark_active());
             }
             render_current_state();
             return m_quick_mod->is_dark_active() ? "Dark mode: ON\n" : "Dark mode: OFF\n";
@@ -1108,14 +1108,13 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
     if (cmd == "night" || cmd == "eye" || cmd == "eye-comfort" || cmd == "eye_comfort") {
         if (m_quick_mod) {
             std::string sub = args.empty() ? "toggle" : args[0];
-            if (sub == "on") {
-                if (!m_quick_mod->is_night_active()) m_quick_mod->handle_click("qa_night", "");
-            } else if (sub == "off") {
-                if (m_quick_mod->is_night_active()) m_quick_mod->handle_click("qa_night", "");
+            if (sub == "on" || sub == "true" || sub == "1") {
+                m_quick_mod->set_eye_comfort(true);
+            } else if (sub == "off" || sub == "false" || sub == "0") {
+                m_quick_mod->set_eye_comfort(false);
             } else {
-                m_quick_mod->handle_click("qa_night", "");
+                m_quick_mod->set_eye_comfort(!m_quick_mod->is_night_active());
             }
-            m_quick_mod->update();
             render_current_state();
             return m_quick_mod->is_night_active() ? "Eye comfort: ON\n" : "Eye comfort: OFF\n";
         }

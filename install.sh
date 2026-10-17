@@ -111,6 +111,13 @@ if [ -f "scripts/power_menu.sh" ]; then
     cp -f scripts/power_menu.sh "$INSTALL_DIR/dynamic-island-powermenu"
     chmod +x "$INSTALL_DIR/dynamic-island-powermenu"
 fi
+if [ -f "scripts/sync_dark_mode.sh" ]; then
+    cp -f scripts/sync_dark_mode.sh "$INSTALL_DIR/dynamic-island-sync-dark"
+    chmod +x "$INSTALL_DIR/dynamic-island-sync-dark"
+    mkdir -p "$CONFIG_DIR/scripts"
+    cp -f scripts/sync_dark_mode.sh "$CONFIG_DIR/scripts/sync_dark_mode.sh"
+    chmod +x "$CONFIG_DIR/scripts/sync_dark_mode.sh"
+fi
 echo -e "${COLOR_GREEN}[OK] Installed binary to:${COLOR_RESET} $INSTALL_DIR/dynamic-island"
 
 # Check PATH

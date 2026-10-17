@@ -1,33 +1,31 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Sync dark mode between desktop, GTK, portals, and web browsers (LibreWolf, Firefox, Chrome, etc.)
+# Highly optimized for performance (pure bash, 0 python overhead)
 
 ACTION="${1:-toggle}"
 
 is_dark() {
-    # 1. Check gsettings color-scheme
+    # 1. Primary check: gsettings color-scheme (Freedesktop appearance portal backend)
     local scheme
     scheme=$(gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null | tr -d "'\"")
     if [ "$scheme" = "prefer-dark" ]; then
         return 0
+    elif [ "$scheme" = "prefer-light" ]; then
+        return 1
     fi
 
-    # 2. Check gsettings gtk-theme
+    # 2. Secondary check: gsettings gtk-theme
     local theme
     theme=$(gsettings get org.gnome.desktop.interface gtk-theme 2>/dev/null | tr -d "'\"")
     if [[ "$theme" =~ [dD]ark ]]; then
         return 0
     fi
 
-    # 3. Check GTK settings
+    # 3. Fallback: Check GTK 3.0 settings.ini
     if [ -f "$HOME/.config/gtk-3.0/settings.ini" ]; then
         if grep -qi "gtk-application-prefer-dark-theme.*=.*1" "$HOME/.config/gtk-3.0/settings.ini" 2>/dev/null; then
             return 0
         fi
-    fi
-
-    # 4. Check browser prefs
-    if grep -q 'ui.systemUsesDarkTheme.*1' "$HOME"/.config/librewolf/librewolf/*/user.js "$HOME"/.config/librewolf/librewolf/*/prefs.js "$HOME"/.config/mozilla/firefox/*/user.js "$HOME"/.config/mozilla/firefox/*/prefs.js 2>/dev/null; then
-        return 0
     fi
 
     return 1
@@ -59,19 +57,15 @@ if [ "$TARGET_DARK" -eq 1 ]; then
     COLOR_SCHEME="prefer-dark"
     GTK_THEME="Adwaita-dark"
     DARK_NUM=1
-    CO_VAL=2
-    THEME_VAL=2
     THEME_ID="firefox-compact-dark@mozilla.org"
 else
-    COLOR_SCHEME="default"
+    COLOR_SCHEME="prefer-light"
     GTK_THEME="Adwaita"
     DARK_NUM=0
-    CO_VAL=2
-    THEME_VAL=2
     THEME_ID="firefox-compact-light@mozilla.org"
 fi
 
-# 1. Update gsettings & dconf
+# 1. Update gsettings & dconf (Triggers Freedesktop Appearance portal signal)
 gsettings set org.gnome.desktop.interface color-scheme "$COLOR_SCHEME" 2>/dev/null &
 gsettings set org.gnome.desktop.interface gtk-theme "$GTK_THEME" 2>/dev/null &
 if command -v dconf >/dev/null 2>&1; then
@@ -120,92 +114,35 @@ defaultPref("ui.systemUsesDarkTheme", $DARK_NUM);
 EOF
 done
 
-# 4. Synchronize Web Browsers (LibreWolf, Firefox, etc.)
-python3 -c "
-import os, glob, re
+# 4. Synchronize Web Browsers in pure bash without python process overhead
+for pdir in "$HOME/.config/librewolf/librewolf"/* "$HOME/.config/mozilla/firefox"/* "$HOME/.mozilla/firefox"/*; do
+    [ -d "$pdir" ] || continue
+    ujs="$pdir/user.js"
+    if [ -f "$ujs" ] || [ -f "$pdir/prefs.js" ]; then
+        tmp_ujs="$pdir/user.js.tmp.$$"
+        if [ -f "$ujs" ]; then
+            grep -v -E "privacy\.resistFingerprinting|privacy\.fingerprintingProtection|layout\.css\.prefers-color-scheme|browser\.theme|ui\.systemUsesDarkTheme|extensions\.activeThemeID" "$ujs" > "$tmp_ujs" 2>/dev/null || true
+        else
+            touch "$tmp_ujs"
+        fi
+        cat <<EOF >> "$tmp_ujs"
+user_pref("privacy.resistFingerprinting", false);
+user_pref("privacy.fingerprintingProtection", true);
+user_pref("privacy.fingerprintingProtection.overrides", "+AllTargets,-CSSPrefersColorScheme");
+user_pref("layout.css.prefers-color-scheme.content-override", 2);
+user_pref("browser.theme.content-theme", 2);
+user_pref("browser.theme.toolbar-theme", 2);
+user_pref("ui.systemUsesDarkTheme", $DARK_NUM);
+user_pref("extensions.activeThemeID", "$THEME_ID");
+EOF
+        mv -f "$tmp_ujs" "$ujs"
 
-target_dark = ($TARGET_DARK == 1)
-dark_num = 1 if target_dark else 0
-theme_id = '$THEME_ID'
-
-home = os.path.expanduser('~')
-profile_patterns = [
-    f'{home}/.config/librewolf/librewolf/*',
-    f'{home}/.config/mozilla/firefox/*',
-    f'{home}/.mozilla/firefox/*'
-]
-
-prefs_to_set = [
-    ('privacy.resistFingerprinting', 'false'),
-    ('privacy.fingerprintingProtection', 'true'),
-    ('privacy.fingerprintingProtection.overrides', '\"+AllTargets,-CSSPrefersColorScheme\"'),
-    ('layout.css.prefers-color-scheme.content-override', '2'),
-    ('browser.theme.content-theme', '2'),
-    ('browser.theme.toolbar-theme', '2'),
-    ('ui.systemUsesDarkTheme', str(dark_num)),
-    ('extensions.activeThemeID', f'\"{theme_id}\"')
-]
-
-for pat in profile_patterns:
-    for pdir in glob.glob(pat):
-        if not os.path.isdir(pdir):
-            continue
-        
-        # 1. Update user.js
-        ujs = os.path.join(pdir, 'user.js')
-        existing_lines = []
-        keys = [p[0] for p in prefs_to_set]
-        if os.path.isfile(ujs):
-            try:
-                with open(ujs, 'r') as f:
-                    existing_lines = [
-                        line for line in f.readlines()
-                        if not any(k in line for k in keys)
-                    ]
-            except Exception:
-                existing_lines = []
-        
-        for k, v in prefs_to_set:
-            existing_lines.append(f'user_pref(\"{k}\", {v});\n')
-        
-        try:
-            with open(ujs, 'w') as f:
-                f.writelines(existing_lines)
-        except Exception:
-            pass
-
-        # Also copy librewolf.overrides.cfg into profile directory
-        ocfg = os.path.join(pdir, 'librewolf.overrides.cfg')
-        try:
-            with open(ocfg, 'w') as f:
-                f.write('''defaultPref(\"privacy.resistFingerprinting\", false);
-defaultPref(\"privacy.fingerprintingProtection\", true);
-defaultPref(\"privacy.fingerprintingProtection.overrides\", \"+AllTargets,-CSSPrefersColorScheme\");
-defaultPref(\"layout.css.prefers-color-scheme.content-override\", 2);
-defaultPref(\"browser.theme.content-theme\", 2);
-defaultPref(\"browser.theme.toolbar-theme\", 2);
-defaultPref(\"ui.systemUsesDarkTheme\", ''' + str(dark_num) + ''');\n''')
-        except Exception:
-            pass
-
-        # 2. Patch live prefs.js if present
-        pjs = os.path.join(pdir, 'prefs.js')
-        if os.path.isfile(pjs):
-            try:
-                with open(pjs, 'r') as f:
-                    content = f.read()
-                for k, v in prefs_to_set:
-                    pat_pref = rf'user_pref\(\"{re.escape(k)}\",\s*[^)]+\);'
-                    new_pref = f'user_pref(\"{k}\", {v});'
-                    if re.search(pat_pref, content):
-                        content = re.sub(pat_pref, new_pref, content)
-                    else:
-                        content += f'\n{new_pref}'
-                with open(pjs, 'w') as f:
-                    f.write(content)
-            except Exception:
-                pass
-" 2>/dev/null &
+        # Also copy librewolf.overrides.cfg into profile directory if librewolf profile
+        if [[ "$pdir" == *"librewolf"* ]]; then
+            cp -f "$HOME/.config/librewolf/librewolf/librewolf.overrides.cfg" "$pdir/librewolf.overrides.cfg" 2>/dev/null || true
+        fi
+    fi
+done
 
 wait
 

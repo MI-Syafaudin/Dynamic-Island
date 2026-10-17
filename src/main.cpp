@@ -45,6 +45,8 @@ static void print_help(const char* prog) {
               << "  " << prog << " alarm dismiss       Dismiss ringing alarm\n"
               << "  " << prog << " alarm snooze [min]  Snooze ringing alarm\n"
               << "  " << prog << " timer <dur> [lbl]   Quick timer shortcut (e.g. timer 15m)\n"
+              << "  " << prog << " dark [on|off]       Toggle or set Dark Mode\n"
+              << "  " << prog << " eye [on|off]        Toggle or set Eye Comfort mode (warm screen filter)\n"
               << "  " << prog << " reload              Reload config.json\n"
               << "  " << prog << " quit                Stop running daemon\n"
               << "  " << prog << " version             Show version and author info\n"

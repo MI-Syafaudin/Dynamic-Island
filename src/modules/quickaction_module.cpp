@@ -1,13 +1,153 @@
 #include "quickaction_module.hpp"
+#include "../hyprland_ipc.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
 #include <vector>
 #include <string>
+#include <string_view>
+#include <cctype>
+#include <initializer_list>
 #include <algorithm>
 #include <unistd.h>
+#include <dirent.h>
+#include <cstring>
 
 namespace di {
+
+namespace {
+
+bool is_proc_running(std::initializer_list<const char*> names) {
+    DIR* dir = opendir("/proc");
+    if (!dir) return false;
+
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr) {
+        if (entry->d_name[0] < '0' || entry->d_name[0] > '9') continue;
+
+        char comm_path[64];
+        snprintf(comm_path, sizeof(comm_path), "/proc/%s/comm", entry->d_name);
+        FILE* fp = fopen(comm_path, "r");
+        if (fp) {
+            char comm[64];
+            if (fgets(comm, sizeof(comm), fp)) {
+                size_t len = strlen(comm);
+                while (len > 0 && (comm[len - 1] == '\n' || comm[len - 1] == '\r')) {
+                    comm[--len] = '\0';
+                }
+                for (const char* name : names) {
+                    if (strcmp(comm, name) == 0) {
+                        fclose(fp);
+                        closedir(dir);
+                        return true;
+                    }
+                }
+            }
+            fclose(fp);
+        }
+    }
+    closedir(dir);
+    return false;
+}
+
+std::string to_lower_copy(std::string_view sv) {
+    std::string res;
+    res.reserve(sv.size());
+    for (char c : sv) {
+        res.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    return res;
+}
+
+bool contains_any(std::string_view haystack, std::initializer_list<std::string_view> needles) {
+    for (auto needle : needles) {
+        if (haystack.find(needle) != std::string_view::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Truncates string to max_chars (codepoints) safely without splitting UTF-8 sequences
+std::string truncate_utf8(std::string_view str, size_t max_chars) {
+    size_t count = 0;
+    size_t byte_idx = 0;
+    while (byte_idx < str.size() && count < max_chars) {
+        unsigned char c = static_cast<unsigned char>(str[byte_idx]);
+        size_t len = 1;
+        if ((c & 0x80) == 0) len = 1;
+        else if ((c & 0xE0) == 0xC0) len = 2;
+        else if ((c & 0xF0) == 0xE0) len = 3;
+        else if ((c & 0xF8) == 0xF0) len = 4;
+
+        if (byte_idx + len > str.size()) break;
+        byte_idx += len;
+        count++;
+    }
+    std::string res(str.substr(0, byte_idx));
+    while (!res.empty() && (res.back() == ' ' || res.back() == '\t')) {
+        res.pop_back();
+    }
+    return res;
+}
+
+std::string map_bt_device_icon(const std::string& icon_field, const std::string& name_field) {
+    std::string icon_l = to_lower_copy(icon_field);
+    std::string name_l = to_lower_copy(name_field);
+
+    // 1. Headphone / Earbuds / TWS
+    if (icon_l.find("audio-headphones") != std::string::npos ||
+        contains_any(name_l, {"bud", "airpod", "headphone", "wh-", "wf-", "tws"})) {
+        return "󰋋";
+    }
+
+    // 2. Headset
+    if (icon_l.find("audio-headset") != std::string::npos ||
+        contains_any(name_l, {"headset", "handsfree"})) {
+        return "󰋎";
+    }
+
+    // 3. Speaker / Audio Card
+    if (contains_any(icon_l, {"audio-card", "audio-speakers", "multimedia-player"}) ||
+        contains_any(name_l, {"speaker", "soundbar", "jbl", "bose", "sony"})) {
+        return "󰓆";
+    }
+
+    // 4. Mouse
+    if (icon_l.find("input-mouse") != std::string::npos ||
+        contains_any(name_l, {"mouse", "mx master", "logitech g"})) {
+        return "󰍽";
+    }
+
+    // 5. Keyboard
+    if (icon_l.find("input-keyboard") != std::string::npos ||
+        contains_any(name_l, {"keyboard", "keychron", "k380"})) {
+        return "󰌒";
+    }
+
+    // 6. Gamepad / Controller
+    if (icon_l.find("input-gaming") != std::string::npos ||
+        contains_any(name_l, {"controller", "gamepad", "dualshock", "dualsense", "xbox", "8bitdo"})) {
+        return "󰉩";
+    }
+
+    // 7. Smartphone / Phone
+    if ((icon_l.find("phone") != std::string::npos && icon_l.find("audio") == std::string::npos) ||
+        (contains_any(name_l, {"phone", "iphone", "galaxy", "redmi", "poco", "pixel"}) && name_l.find("headphone") == std::string::npos)) {
+        return "󰄜";
+    }
+
+    // 8. Komputer / Laptop
+    if (icon_l.find("computer") != std::string::npos || icon_l.find("laptop") != std::string::npos ||
+        contains_any(name_l, {"computer", "laptop"})) {
+        return "󰌢";
+    }
+
+    // 9. Perangkat Lain (Default Connected)
+    return "󰂰";
+}
+
+} // anonymous namespace
 
 QuickActionModule::QuickActionModule() {
     update_async();
@@ -124,6 +264,114 @@ void QuickActionModule::query_states() {
     }
     m_bt_active.store(bt_on);
 
+    std::string bt_icon_val = "󰂲";
+    std::string bt_label_val = "Bluetooth";
+
+    if (!bt_on) {
+        std::lock_guard<std::mutex> lock(m_bt_info_mutex);
+        m_bt_icon = bt_icon_val;
+        m_bt_label = bt_label_val;
+    } else {
+        bt_icon_val = "󰂯";
+        bt_label_val = "Bluetooth";
+
+        bool connected = false;
+        std::string found_icon;
+        std::string found_name;
+
+        auto parse_info_stream = [&](FILE* fp) {
+            char buf[512];
+            bool dev_connected = false;
+            std::string dev_icon;
+            std::string dev_name;
+            std::string dev_alias;
+
+            auto extract_val = [](const std::string& line, const std::string& key) -> std::string {
+                size_t pos = line.find(key);
+                if (pos == std::string::npos) return "";
+                size_t start = pos + key.length();
+                while (start < line.size() && (line[start] == ' ' || line[start] == '\t')) {
+                    start++;
+                }
+                std::string val = line.substr(start);
+                while (!val.empty() && (val.back() == '\r' || val.back() == '\n' || val.back() == ' ' || val.back() == '\t')) {
+                    val.pop_back();
+                }
+                return val;
+            };
+
+            while (fgets(buf, sizeof(buf), fp)) {
+                std::string line = buf;
+                if (line.rfind("Device ", 0) == 0 && (!dev_name.empty() || !dev_alias.empty())) {
+                    if (dev_connected) {
+                        connected = true;
+                        found_icon = dev_icon;
+                        found_name = !dev_name.empty() ? dev_name : dev_alias;
+                        return;
+                    }
+                    dev_connected = false;
+                    dev_icon.clear();
+                    dev_name.clear();
+                    dev_alias.clear();
+                }
+
+                if (line.find("Connected: yes") != std::string::npos) {
+                    dev_connected = true;
+                }
+                if (line.find("Icon:") != std::string::npos) {
+                    std::string v = extract_val(line, "Icon:");
+                    if (!v.empty()) dev_icon = v;
+                }
+                if (line.find("Name:") != std::string::npos) {
+                    std::string v = extract_val(line, "Name:");
+                    if (!v.empty()) dev_name = v;
+                }
+                if (line.find("Alias:") != std::string::npos) {
+                    std::string v = extract_val(line, "Alias:");
+                    if (!v.empty()) dev_alias = v;
+                }
+            }
+
+            if (dev_connected) {
+                connected = true;
+                found_icon = dev_icon;
+                found_name = !dev_name.empty() ? dev_name : dev_alias;
+            }
+        };
+
+        // 1. Query device info via bluetoothctl info
+        FILE* fp_info = popen("bluetoothctl info 2>/dev/null", "r");
+        if (fp_info) {
+            parse_info_stream(fp_info);
+            pclose(fp_info);
+        }
+
+        // 2. Fallback: on Linux BlueZ batch mode, if bluetoothctl info requires device address, query actively connected devices
+        if (!connected) {
+            FILE* fp_conn = popen("for dev in $(bluetoothctl devices Connected 2>/dev/null | cut -d' ' -f2); do bluetoothctl info \"$dev\" 2>/dev/null; done", "r");
+            if (fp_conn) {
+                parse_info_stream(fp_conn);
+                pclose(fp_conn);
+            }
+        }
+
+        if (connected) {
+            bt_icon_val = map_bt_device_icon(found_icon, found_name);
+            if (!found_name.empty()) {
+                std::string truncated = truncate_utf8(found_name, 12);
+                if (!truncated.empty()) {
+                    bt_label_val = truncated;
+                }
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(m_bt_info_mutex);
+            m_bt_icon = bt_icon_val;
+            m_bt_label = bt_label_val;
+        }
+    }
+
     // 3. Audio Mute state: wpctl get-volume @DEFAULT_AUDIO_SINK@
     FILE* fp = popen("wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null", "r");
     bool mute_on = false;
@@ -136,7 +384,7 @@ void QuickActionModule::query_states() {
     }
     m_mute_active.store(mute_on);
 
-    // 4. Dark mode state: Check gsettings, gtk-theme, GTK settings, and browser preferences
+    // 4. Dark mode state: Check gsettings color-scheme first (direct standard)
     bool dark_on = false;
     FILE* fp_dark = popen("gsettings get org.gnome.desktop.interface color-scheme 2>/dev/null", "r");
     if (fp_dark) {
@@ -146,58 +394,44 @@ void QuickActionModule::query_states() {
         pclose(fp_dark);
         if (dout.find("prefer-dark") != std::string::npos) {
             dark_on = true;
-        }
-    }
-    if (!dark_on) {
-        FILE* fp_gtk = popen("gsettings get org.gnome.desktop.interface gtk-theme 2>/dev/null", "r");
-        if (fp_gtk) {
-            char gbuf[128];
-            std::string gout;
-            while (fgets(gbuf, sizeof(gbuf), fp_gtk)) gout += gbuf;
-            pclose(fp_gtk);
-            if (gout.find("dark") != std::string::npos || gout.find("Dark") != std::string::npos) {
-                dark_on = true;
-            }
-        }
-    }
-    if (!dark_on) {
-        FILE* fp_br = popen("grep -q 'layout.css.prefers-color-scheme.content-override.*0' $HOME/.config/librewolf/librewolf/*/user.js $HOME/.config/librewolf/librewolf/*/prefs.js $HOME/.config/mozilla/firefox/*/user.js $HOME/.config/mozilla/firefox/*/prefs.js 2>/dev/null && echo dark", "r");
-        if (fp_br) {
-            char bbuf[64];
-            if (fgets(bbuf, sizeof(bbuf), fp_br)) {
-                if (std::string(bbuf).find("dark") != std::string::npos) {
+        } else if (dout.find("prefer-light") != std::string::npos) {
+            dark_on = false;
+        } else {
+            // Fallback if "default" or unset: check gtk-theme
+            FILE* fp_gtk = popen("gsettings get org.gnome.desktop.interface gtk-theme 2>/dev/null", "r");
+            if (fp_gtk) {
+                char gbuf[128];
+                std::string gout;
+                while (fgets(gbuf, sizeof(gbuf), fp_gtk)) gout += gbuf;
+                pclose(fp_gtk);
+                if (gout.find("dark") != std::string::npos || gout.find("Dark") != std::string::npos) {
                     dark_on = true;
                 }
             }
-            pclose(fp_br);
         }
     }
     m_dark_active.store(dark_on);
 
-    // 5. Night light state: check processes (hyprsunset, wlsunset, gammastep) or Hyprland screen_shader
-    bool proc_running = (std::system("pgrep -x hyprsunset >/dev/null 2>&1 || pgrep -x wlsunset >/dev/null 2>&1 || pgrep -x gammastep >/dev/null 2>&1") == 0);
-    bool shader_active = false;
-    if (!proc_running) {
-        FILE* fp_sh = popen("hyprctl getoption decoration:screen_shader -j 2>/dev/null", "r");
-        if (fp_sh) {
-            char sbuf[256];
-            std::string sout;
-            while (fgets(sbuf, sizeof(sbuf), fp_sh)) sout += sbuf;
-            pclose(fp_sh);
-            size_t str_pos = sout.find("\"str\":");
-            if (str_pos != std::string::npos) {
-                size_t q1 = sout.find('"', str_pos + 6);
-                size_t q2 = (q1 != std::string::npos) ? sout.find('"', q1 + 1) : std::string::npos;
-                if (q1 != std::string::npos && q2 != std::string::npos && q2 > q1 + 1) {
-                    std::string val = sout.substr(q1 + 1, q2 - q1 - 1);
-                    if (!val.empty() && val != "[[EMPTY]]") {
-                        shader_active = true;
-                    }
-                }
+    // 5. Night light state: check Hyprland screen_shader via direct Unix socket IPC (0 subprocesses!)
+    bool eye_active = false;
+    std::string sout = HyprlandIpc::request("j/getoption decoration:screen_shader");
+    size_t str_pos = sout.find("\"str\":");
+    if (str_pos != std::string::npos) {
+        size_t q1 = sout.find('"', str_pos + 6);
+        size_t q2 = (q1 != std::string::npos) ? sout.find('"', q1 + 1) : std::string::npos;
+        if (q1 != std::string::npos && q2 != std::string::npos && q2 > q1 + 1) {
+            std::string val = sout.substr(q1 + 1, q2 - q1 - 1);
+            if (!val.empty() && val != "[[EMPTY]]" && val != "none") {
+                eye_active = true;
             }
         }
     }
-    m_night_active.store(proc_running || shader_active);
+
+    if (!eye_active) {
+        // Check if hyprsunset, wlsunset, or gammastep process is running via lightweight /proc scan (0 forks!)
+        eye_active = is_proc_running({"hyprsunset", "wlsunset", "gammastep"});
+    }
+    m_night_active.store(eye_active);
 }
 
 void QuickActionModule::get_preferred_dimensions(PangoFontDescription* font_desc, const Config& config, double& w, double& h, cairo_t* cr) {
@@ -279,9 +513,17 @@ void QuickActionModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_de
     bool dark = m_dark_active.load();
     bool eye = m_night_active.load();
 
+    std::string bt_icon;
+    std::string bt_label;
+    {
+        std::lock_guard<std::mutex> lock(m_bt_info_mutex);
+        bt_icon = m_bt_icon;
+        bt_label = m_bt_label;
+    }
+
     std::vector<ActionBtn> buttons = {
         {wifi ? "󰖩" : "󰖪", "WiFi", "qa_wifi", wifi, config.colors.accent_blue},
-        {bt ? "󰂯" : "󰂲", "Bluetooth", "qa_bt", bt, config.colors.accent_blue},
+        {bt ? bt_icon : "󰂲", bt ? bt_label : "Bluetooth", "qa_bt", bt, config.colors.accent_blue},
         {mute ? "󰖁" : "󰕾", mute ? "Muted" : "Mute", "qa_mute", mute, config.colors.danger},
         {dark ? "󰔎" : "󰃭", "Dark", "qa_dark", dark, config.colors.accent_purple},
         {eye ? "󰈈" : "󰈉", "Eye Comfort", "qa_night", eye, config.colors.warning},
@@ -401,16 +643,79 @@ void QuickActionModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_de
     cairo_paint_with_alpha(cr, alpha);
 }
 
+std::string QuickActionModule::get_shader_path() const {
+    const char* home = std::getenv("HOME");
+    std::string home_str = home ? home : "";
+    std::vector<std::string> candidates = {
+        home_str + "/.config/dynamic-island/shaders/nightmode.frag",
+        home_str + "/Projects/dynamic_island/shaders/nightmode.frag",
+        "/usr/local/share/dynamic-island/shaders/nightmode.frag",
+        "/etc/xdg/dynamic-island/shaders/nightmode.frag"
+    };
+
+    for (const auto& path : candidates) {
+        if (!path.empty() && access(path.c_str(), R_OK) == 0) {
+            return path;
+        }
+    }
+    return "";
+}
+
+void QuickActionModule::set_eye_comfort(bool enable) {
+    m_night_active.store(enable);
+
+    if (enable) {
+        std::string shader = get_shader_path();
+        bool applied = false;
+
+        if (!shader.empty()) {
+            // 1. Try Hyprland 0.56+ Lua eval over native Unix socket (0 forks, sub-millisecond)
+            // Note: damage_tracking is set to 0 while shader is active to completely prevent
+            // buffer-swap flickering, color blinking, and stuttering across KMS scanout planes
+            std::string lua_cmd = "eval hl.config({ decoration = { screen_shader = \"" + shader + "\" }, debug = { damage_tracking = 0 } })";
+            std::string resp = HyprlandIpc::request(lua_cmd);
+            if (resp == "ok") {
+                applied = true;
+            } else {
+                // 2. Try legacy Hyprland keyword
+                std::string kw_cmd = "keyword decoration:screen_shader " + shader + "; keyword debug:damage_tracking 0";
+                std::string kw_resp = HyprlandIpc::request(kw_cmd);
+                if (kw_resp.find("ok") != std::string::npos || (kw_resp.empty() && access(shader.c_str(), R_OK) == 0)) {
+                    applied = true;
+                }
+            }
+        }
+
+        // 3. Fallback: if Hyprland shader wasn't applied, check for standalone sunset utilities
+        if (!applied) {
+            std::system("if command -v hyprsunset >/dev/null 2>&1; then hyprsunset --temperature 4500 & "
+                        "elif command -v wlsunset >/dev/null 2>&1; then wlsunset -t 4500 & "
+                        "elif command -v gammastep >/dev/null 2>&1; then gammastep -O 4500 & "
+                        "fi &");
+        }
+    } else {
+        // Disabling Eye Comfort:
+        // 1. Reset Hyprland screen_shader and restore default damage_tracking = 2 via Lua eval & keyword
+        HyprlandIpc::request("eval hl.config({ decoration = { screen_shader = \"\" }, debug = { damage_tracking = 2 } })");
+        HyprlandIpc::request("keyword decoration:screen_shader \"\"; keyword debug:damage_tracking 2");
+
+        // 2. Kill standalone daemons if running
+        std::system("pkill -x hyprsunset >/dev/null 2>&1; "
+                    "pkill -x wlsunset >/dev/null 2>&1; "
+                    "pkill -x gammastep >/dev/null 2>&1 &");
+    }
+}
+
 void QuickActionModule::set_dark_mode(bool enable) {
     m_dark_active.store(enable);
 
     // Call sync_dark_mode.sh helper script or fallback commands
     const char* home = std::getenv("HOME");
     std::string home_str = home ? home : "";
-    std::string script1 = home_str + "/.config/dynamic-island/scripts/sync_dark_mode.sh";
-    std::string script2 = home_str + "/Projects/dynamic_island/scripts/sync_dark_mode.sh";
-    std::string script3 = "/usr/local/bin/dynamic-island-sync-dark";
-    std::string script4 = home_str + "/.local/bin/dynamic-island-sync-dark";
+    std::string script1 = home_str + "/.local/bin/dynamic-island-sync-dark";
+    std::string script2 = home_str + "/.config/dynamic-island/scripts/sync_dark_mode.sh";
+    std::string script3 = home_str + "/Projects/dynamic_island/scripts/sync_dark_mode.sh";
+    std::string script4 = "/usr/local/bin/dynamic-island-sync-dark";
 
     std::string arg = enable ? "on" : "off";
 
@@ -423,7 +728,7 @@ void QuickActionModule::set_dark_mode(bool enable) {
     if (!found_script.empty()) {
         std::system(("\"" + found_script + "\" " + arg + " >/dev/null 2>&1 &").c_str());
     } else {
-        std::string scheme = enable ? "prefer-dark" : "default";
+        std::string scheme = enable ? "prefer-dark" : "prefer-light";
         std::string gtk_theme = enable ? "Adwaita-dark" : "Adwaita";
         int dark_num = enable ? 1 : 0;
 
@@ -434,28 +739,7 @@ void QuickActionModule::set_dark_mode(bool enable) {
             "mkdir -p ~/.config/gtk-3.0 ~/.config/gtk-4.0 && "
             "for sfile in ~/.config/gtk-3.0/settings.ini ~/.config/gtk-4.0/settings.ini; do "
             "  echo -e \"[Settings]\\ngtk-application-prefer-dark-theme=" + std::to_string(dark_num) + "\\ngtk-theme-name=" + gtk_theme + "\" > \"$sfile\"; "
-            "done & "
-            "mkdir -p ~/.librewolf ~/.config/librewolf/librewolf && "
-            "for ocfg in ~/.librewolf/librewolf.overrides.cfg ~/.config/librewolf/librewolf/librewolf.overrides.cfg; do "
-            "  echo -e '// LibreWolf Overrides\\ndefaultPref(\"privacy.resistFingerprinting\", false);\\ndefaultPref(\"privacy.fingerprintingProtection\", true);\\ndefaultPref(\"privacy.fingerprintingProtection.overrides\", \"+AllTargets,-CSSPrefersColorScheme\");\\ndefaultPref(\"layout.css.prefers-color-scheme.content-override\", 2);\\ndefaultPref(\"browser.theme.content-theme\", 2);\\ndefaultPref(\"browser.theme.toolbar-theme\", 2);\\ndefaultPref(\"ui.systemUsesDarkTheme\", " + std::to_string(dark_num) + ");' > \"$ocfg\"; "
-            "done & "
-            "python3 -c \""
-            "import os, glob\n"
-            "home = os.path.expanduser('~')\n"
-            "for pat in [f'{home}/.config/librewolf/librewolf/*', f'{home}/.config/mozilla/firefox/*']:\n"
-            "  for pdir in glob.glob(pat):\n"
-            "    if os.path.isdir(pdir):\n"
-            "      ujs = os.path.join(pdir, 'user.js')\n"
-            "      lines = [l for l in open(ujs).readlines() if not any(k in l for k in ['content-override', 'content-theme', 'toolbar-theme', 'systemUsesDarkTheme', 'resistFingerprinting', 'fingerprintingProtection'])] if os.path.isfile(ujs) else []\n"
-            "      lines.append('user_pref(\\\"privacy.resistFingerprinting\\\", false);\\\\n')\n"
-            "      lines.append('user_pref(\\\"privacy.fingerprintingProtection\\\", true);\\\\n')\n"
-            "      lines.append('user_pref(\\\"privacy.fingerprintingProtection.overrides\\\", \\\"+AllTargets,-CSSPrefersColorScheme\\\");\\\\n')\n"
-            "      lines.append('user_pref(\\\"layout.css.prefers-color-scheme.content-override\\\", 2);\\\\n')\n"
-            "      lines.append('user_pref(\\\"browser.theme.content-theme\\\", 2);\\\\n')\n"
-            "      lines.append(f'user_pref(\\\"ui.systemUsesDarkTheme\\\", " + std::to_string(dark_num) + ");\\\\n')\n"
-            "      try: open(ujs, 'w').writelines(lines)\n"
-            "      except: pass\n"
-            "\" >/dev/null 2>&1 &";
+            "done &";
         std::system(cmd.c_str());
     }
 }
@@ -475,6 +759,11 @@ bool QuickActionModule::handle_click(const std::string& action, const std::strin
     if (action == "qa_bt") {
         bool new_val = !m_bt_active.load();
         m_bt_active.store(new_val);
+        {
+            std::lock_guard<std::mutex> lock(m_bt_info_mutex);
+            m_bt_icon = new_val ? "󰂯" : "󰂲";
+            m_bt_label = "Bluetooth";
+        }
         if (new_val) {
             std::system("bluetoothctl power on &");
         } else {
@@ -493,23 +782,7 @@ bool QuickActionModule::handle_click(const std::string& action, const std::strin
         return true;
     }
     if (action == "qa_night" || action == "qa_eye" || action == "qa_eye_comfort") {
-        bool new_val = !m_night_active.load();
-        m_night_active.store(new_val);
-        if (new_val) {
-            std::system("if command -v hyprsunset >/dev/null 2>&1; then hyprsunset --temperature 4500 & "
-                        "elif command -v wlsunset >/dev/null 2>&1; then wlsunset -t 4500 & "
-                        "elif command -v gammastep >/dev/null 2>&1; then gammastep -O 4500 & "
-                        "else "
-                        "  SHADER=\"$HOME/.config/dynamic-island/shaders/nightmode.frag\"; "
-                        "  [ ! -f \"$SHADER\" ] && SHADER=\"$HOME/Projects/dynamic_island/shaders/nightmode.frag\"; "
-                        "  [ -f \"$SHADER\" ] && hyprctl keyword decoration:screen_shader \"$SHADER\" >/dev/null 2>&1; "
-                        "fi &");
-        } else {
-            std::system("pkill -x hyprsunset >/dev/null 2>&1; "
-                        "pkill -x wlsunset >/dev/null 2>&1; "
-                        "pkill -x gammastep >/dev/null 2>&1; "
-                        "hyprctl keyword decoration:screen_shader \"\" >/dev/null 2>&1 &");
-        }
+        set_eye_comfort(!m_night_active.load());
         return true;
     }
     if (action == "qa_shot") {

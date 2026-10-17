@@ -36,6 +36,8 @@ rm -f "$HOME/.config/systemd/user/dynamic-island.service"
 BIN_PATH="$HOME/.local/bin/dynamic-island"
 if [ -f "$BIN_PATH" ]; then
     rm -f "$BIN_PATH"
+    rm -f "$HOME/.local/bin/dynamic-island-powermenu"
+    rm -f "$HOME/.local/bin/dynamic-island-sync-dark"
     echo -e "${COLOR_GREEN}[OK] Removed binary:${COLOR_RESET} $BIN_PATH"
 fi
 
