@@ -149,7 +149,7 @@ std::string map_bt_device_icon(const std::string& icon_field, const std::string&
 
 } // anonymous namespace
 
-QuickActionModule::QuickActionModule() {
+QuickActionModule::QuickActionModule(const Config* config) : m_config(config) {
     update_async();
 }
 
@@ -688,10 +688,20 @@ void QuickActionModule::set_eye_comfort(bool enable) {
 
         // 3. Fallback: if Hyprland shader wasn't applied, check for standalone sunset utilities
         if (!applied) {
-            std::system("if command -v hyprsunset >/dev/null 2>&1; then hyprsunset --temperature 4500 & "
-                        "elif command -v wlsunset >/dev/null 2>&1; then wlsunset -t 4500 & "
-                        "elif command -v gammastep >/dev/null 2>&1; then gammastep -O 4500 & "
-                        "fi &");
+            if (m_config && !m_config->nightlight_binary.empty()) {
+                std::string cmd = m_config->nightlight_binary + " --temperature 4500 &";
+                if (m_config->nightlight_binary.find("wlsunset") != std::string::npos) {
+                    cmd = m_config->nightlight_binary + " -t 4500 &";
+                } else if (m_config->nightlight_binary.find("gammastep") != std::string::npos) {
+                    cmd = m_config->nightlight_binary + " -O 4500 &";
+                }
+                std::system(cmd.c_str());
+            } else {
+                std::system("if command -v hyprsunset >/dev/null 2>&1; then hyprsunset --temperature 4500 & "
+                            "elif command -v wlsunset >/dev/null 2>&1; then wlsunset -t 4500 & "
+                            "elif command -v gammastep >/dev/null 2>&1; then gammastep -O 4500 & "
+                            "fi &");
+            }
         }
     } else {
         // Disabling Eye Comfort:
@@ -709,24 +719,28 @@ void QuickActionModule::set_eye_comfort(bool enable) {
 void QuickActionModule::set_dark_mode(bool enable) {
     m_dark_active.store(enable);
 
-    // Call sync_dark_mode.sh helper script or fallback commands
+    // Call sync_dark_mode.lua helper script or fallback commands
     const char* home = std::getenv("HOME");
     std::string home_str = home ? home : "";
     std::string script1 = home_str + "/.local/bin/dynamic-island-sync-dark";
-    std::string script2 = home_str + "/.config/dynamic-island/scripts/sync_dark_mode.sh";
-    std::string script3 = home_str + "/Projects/dynamic_island/scripts/sync_dark_mode.sh";
+    std::string script2 = home_str + "/.config/dynamic-island/scripts/sync_dark_mode.lua";
+    std::string script3 = home_str + "/Projects/dynamic_island/scripts/sync_dark_mode.lua";
     std::string script4 = "/usr/local/bin/dynamic-island-sync-dark";
 
     std::string arg = enable ? "on" : "off";
 
     std::string found_script = "";
     if (access(script1.c_str(), X_OK) == 0) found_script = script1;
-    else if (access(script2.c_str(), X_OK) == 0) found_script = script2;
-    else if (access(script3.c_str(), X_OK) == 0) found_script = script3;
+    else if (access(script2.c_str(), R_OK) == 0) found_script = script2;
+    else if (access(script3.c_str(), R_OK) == 0) found_script = script3;
     else if (access(script4.c_str(), X_OK) == 0) found_script = script4;
 
     if (!found_script.empty()) {
-        std::system(("\"" + found_script + "\" " + arg + " >/dev/null 2>&1 &").c_str());
+        if (access(found_script.c_str(), X_OK) == 0) {
+            std::system(("\"" + found_script + "\" " + arg + " >/dev/null 2>&1 &").c_str());
+        } else {
+            std::system(("luajit \"" + found_script + "\" " + arg + " >/dev/null 2>&1 &").c_str());
+        }
     } else {
         std::string scheme = enable ? "prefer-dark" : "prefer-light";
         std::string gtk_theme = enable ? "Adwaita-dark" : "Adwaita";

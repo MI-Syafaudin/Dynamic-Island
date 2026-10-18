@@ -2,7 +2,7 @@
 
 #include <string>
 #include <vector>
-#include "json.hpp"
+#include <utility>
 
 namespace di {
 
@@ -72,12 +72,23 @@ public:
     std::string window_display_mode = "icon"; // "icon", "both", "text"
     std::string ping_target = "1.1.1.1";
 
+    std::string theme = "default_dark";
     ThemeColors colors;
     ModuleSettings modules;
     TimeoutSettings timeouts;
 
+    // Custom or pre-resolved system binaries & sounds
+    std::string audio_player;
+    std::string sound_alarm;
+    std::string sound_ting;
+    std::string nightlight_binary;
+
+    // Window icon mappings loaded from Lua: { pattern, icon }
+    std::vector<std::pair<std::string, std::string>> window_icons;
+
     bool load_from_file(const std::string& path);
     bool load_default();
+    void resolve_system_dependencies();
     static std::string get_default_config_path();
 };
 

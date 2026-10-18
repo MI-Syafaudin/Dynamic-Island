@@ -200,7 +200,12 @@ bool WaylandBackend::ensure_buffer_storage(WaylandBuffer& buf, int width, int he
     int stride = width * 4;
     size_t required_size = static_cast<size_t>(stride) * height;
 
-    constexpr size_t DEFAULT_CAPACITY = 850 * 240 * 4; // 816,000 bytes pre-allocation
+    constexpr size_t DEFAULT_CAPACITY = 1000 * 400 * 4; // 1,600,000 bytes pre-allocation
+
+    // Fast-path: Buffer storage and dimensions already match, zero allocation/recreation needed
+    if (buf.shm_data && buf.width == width && buf.height == height && buf.cairo_surface && buf.buffer) {
+        return true;
+    }
 
     // Allocate or grow mmap storage only if needed
     if (!buf.shm_data || buf.allocated_capacity < required_size) {

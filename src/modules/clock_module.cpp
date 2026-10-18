@@ -6,7 +6,8 @@
 #include <filesystem>
 #include <algorithm>
 #include <cmath>
-#include "../json.hpp"
+#include <lua.hpp>
+#include <unistd.h>
 
 namespace di {
 
@@ -24,77 +25,102 @@ ClockModule::ClockModule() {
 std::string ClockModule::get_alarms_file_path() const {
     const char* xdg_config = std::getenv("XDG_CONFIG_HOME");
     if (xdg_config && *xdg_config) {
-        return std::string(xdg_config) + "/dynamic-island/alarms.json";
+        return std::string(xdg_config) + "/dynamic-island/alarms.lua";
     }
     const char* home = std::getenv("HOME");
     if (home && *home) {
-        return std::string(home) + "/.config/dynamic-island/alarms.json";
+        return std::string(home) + "/.config/dynamic-island/alarms.lua";
     }
-    return "alarms.json";
+    return "alarms.lua";
 }
 
 void ClockModule::load_alarms() {
     std::string path = get_alarms_file_path();
-    std::ifstream f(path);
-    if (!f.is_open()) return;
+    if (access(path.c_str(), R_OK) != 0) return;
 
-    std::stringstream ss;
-    ss << f.rdbuf();
-    std::string content = ss.str();
-    if (content.empty()) return;
+    lua_State* L = luaL_newstate();
+    if (!L) return;
+    luaL_openlibs(L);
 
-    JsonValue root = JsonParser::parse(content);
-    if (!root.is_array()) return;
+    if (luaL_dofile(L, path.c_str()) != LUA_OK || !lua_istable(L, -1)) {
+        lua_close(L);
+        return;
+    }
 
     auto now = std::chrono::system_clock::now();
     time_t now_c = std::chrono::system_clock::to_time_t(now);
 
     m_alarms.clear();
     int max_id = 0;
+    int len = static_cast<int>(lua_objlen(L, -1));
 
-    for (const auto& item : root.as_array()) {
-        if (!item.is_object()) continue;
-        AlarmItem alarm;
-        alarm.id = item.has("id") ? item["id"].as_int() : 1;
-        alarm.hour = item.has("hour") ? item["hour"].as_int() : -1;
-        alarm.minute = item.has("minute") ? item["minute"].as_int() : -1;
-        alarm.label = item.has("label") ? item["label"].as_string() : "Alarm";
-        alarm.is_timer = item.has("is_timer") ? item["is_timer"].as_bool() : false;
-        alarm.total_seconds = item.has("total_seconds") ? item["total_seconds"].as_int() : 0;
-        alarm.is_ringing = false;
+    for (int i = 1; i <= len; ++i) {
+        lua_rawgeti(L, -1, i);
+        if (lua_istable(L, -1)) {
+            AlarmItem alarm;
+            lua_getfield(L, -1, "id");
+            alarm.id = lua_isnumber(L, -1) ? static_cast<int>(lua_tointeger(L, -1)) : 1;
+            lua_pop(L, 1);
 
-        time_t target_epoch = item.has("target_epoch") ? static_cast<time_t>(item["target_epoch"].as_int()) : 0;
+            lua_getfield(L, -1, "hour");
+            alarm.hour = lua_isnumber(L, -1) ? static_cast<int>(lua_tointeger(L, -1)) : -1;
+            lua_pop(L, 1);
 
-        if (alarm.is_timer) {
-            if (target_epoch <= now_c) {
-                // Expired timer, skip
-                continue;
-            }
-            alarm.target_time = std::chrono::system_clock::from_time_t(target_epoch);
-        } else {
-            // Wall-clock alarm
-            if (alarm.hour >= 0 && alarm.minute >= 0) {
-                std::tm tm_target = *std::localtime(&now_c);
-                tm_target.tm_hour = alarm.hour;
-                tm_target.tm_min = alarm.minute;
-                tm_target.tm_sec = 0;
-                time_t target_c = std::mktime(&tm_target);
-                if (target_c <= now_c) {
-                    target_c += 86400; // Next day
+            lua_getfield(L, -1, "minute");
+            alarm.minute = lua_isnumber(L, -1) ? static_cast<int>(lua_tointeger(L, -1)) : -1;
+            lua_pop(L, 1);
+
+            lua_getfield(L, -1, "label");
+            alarm.label = lua_isstring(L, -1) ? lua_tostring(L, -1) : "Alarm";
+            lua_pop(L, 1);
+
+            lua_getfield(L, -1, "is_timer");
+            alarm.is_timer = lua_isboolean(L, -1) ? (lua_toboolean(L, -1) != 0) : false;
+            lua_pop(L, 1);
+
+            lua_getfield(L, -1, "total_seconds");
+            alarm.total_seconds = lua_isnumber(L, -1) ? static_cast<int>(lua_tointeger(L, -1)) : 0;
+            lua_pop(L, 1);
+
+            lua_getfield(L, -1, "target_epoch");
+            time_t target_epoch = lua_isnumber(L, -1) ? static_cast<time_t>(lua_tointeger(L, -1)) : 0;
+            lua_pop(L, 1);
+
+            alarm.is_ringing = false;
+
+            if (alarm.is_timer) {
+                if (target_epoch <= now_c) {
+                    lua_pop(L, 1);
+                    continue;
                 }
-                alarm.target_time = std::chrono::system_clock::from_time_t(target_c);
-            } else if (target_epoch > now_c) {
                 alarm.target_time = std::chrono::system_clock::from_time_t(target_epoch);
             } else {
-                continue;
+                if (alarm.hour >= 0 && alarm.minute >= 0) {
+                    std::tm tm_target = *std::localtime(&now_c);
+                    tm_target.tm_hour = alarm.hour;
+                    tm_target.tm_min = alarm.minute;
+                    tm_target.tm_sec = 0;
+                    time_t target_c = std::mktime(&tm_target);
+                    if (target_c <= now_c) {
+                        target_c += 86400; // Next day
+                    }
+                    alarm.target_time = std::chrono::system_clock::from_time_t(target_c);
+                } else if (target_epoch > now_c) {
+                    alarm.target_time = std::chrono::system_clock::from_time_t(target_epoch);
+                } else {
+                    lua_pop(L, 1);
+                    continue;
+                }
             }
-        }
 
-        if (alarm.id > max_id) max_id = alarm.id;
-        m_alarms.push_back(alarm);
+            if (alarm.id > max_id) max_id = alarm.id;
+            m_alarms.push_back(alarm);
+        }
+        lua_pop(L, 1);
     }
 
     m_next_alarm_id = max_id + 1;
+    lua_close(L);
 }
 
 void ClockModule::save_alarms() const {
@@ -108,23 +134,25 @@ void ClockModule::save_alarms() const {
     std::ofstream f(path);
     if (!f.is_open()) return;
 
-    f << "[\n";
-    bool first = true;
+    f << "-- Dynamic Island Alarms (Lua)\nreturn {\n";
     for (const auto& a : m_alarms) {
-        if (!first) f << ",\n";
-        first = false;
         time_t epoch = std::chrono::system_clock::to_time_t(a.target_time);
+        std::string safe_lbl;
+        for (char c : a.label) {
+            if (c == '"' || c == '\\') safe_lbl += '\\';
+            safe_lbl += c;
+        }
         f << "  {\n"
-          << "    \"id\": " << a.id << ",\n"
-          << "    \"hour\": " << a.hour << ",\n"
-          << "    \"minute\": " << a.minute << ",\n"
-          << "    \"label\": \"" << a.label << "\",\n"
-          << "    \"is_timer\": " << (a.is_timer ? "true" : "false") << ",\n"
-          << "    \"total_seconds\": " << a.total_seconds << ",\n"
-          << "    \"target_epoch\": " << epoch << "\n"
-          << "  }";
+          << "    id = " << a.id << ",\n"
+          << "    hour = " << a.hour << ",\n"
+          << "    minute = " << a.minute << ",\n"
+          << "    label = \"" << safe_lbl << "\",\n"
+          << "    is_timer = " << (a.is_timer ? "true" : "false") << ",\n"
+          << "    total_seconds = " << a.total_seconds << ",\n"
+          << "    target_epoch = " << epoch << ",\n"
+          << "  },\n";
     }
-    f << "\n]\n";
+    f << "}\n";
 }
 
 int ClockModule::add_alarm(int hour, int minute, const std::string& label) {

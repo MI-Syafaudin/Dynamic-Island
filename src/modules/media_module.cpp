@@ -8,7 +8,6 @@ namespace di {
 
 MediaModule::MediaModule() {
     m_anim_start_time = std::chrono::steady_clock::now();
-    query_mpris();
     m_worker_running = true;
     m_worker_thread = std::thread(&MediaModule::worker_loop, this);
 }
@@ -29,6 +28,7 @@ void MediaModule::on_expanded() {
 }
 
 void MediaModule::worker_loop() {
+    query_mpris();
     while (m_worker_running) {
         int wait_ms = 1500;
         {

@@ -173,7 +173,7 @@ void NetworkModule::draw_compact(cairo_t* cr, PangoFontDescription* font_desc, c
     int tw, th;
     pango_layout_get_pixel_size(layout, &tw, &th);
 
-    if (m_connected) {
+    if (conn) {
         cairo_set_source_rgba(cr, config.colors.accent_blue.r, config.colors.accent_blue.g, config.colors.accent_blue.b, 0.95);
     } else {
         cairo_set_source_rgba(cr, config.colors.subtext.r, config.colors.subtext.g, config.colors.subtext.b, 0.6);

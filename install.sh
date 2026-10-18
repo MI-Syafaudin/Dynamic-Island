@@ -57,6 +57,8 @@ check_pkg_config "wayland-client" "wayland"
 check_pkg_config "cairo" "cairo"
 check_pkg_config "pango" "pango"
 check_pkg_config "pangocairo" "pango"
+check_pkg_config "luajit" "luajit"
+check_cmd luajit "luajit"
 
 # Runtime utilities
 check_cmd playerctl "playerctl"
@@ -104,19 +106,23 @@ echo -e "${COLOR_GREEN}[OK] Build successful! Binary size: $(ls -lh build/dynami
 
 # 5. Install Binary & Helper Scripts
 INSTALL_DIR="$HOME/.local/bin"
+CONFIG_DIR="$HOME/.config/dynamic-island"
 mkdir -p "$INSTALL_DIR"
 cp -f build/dynamic-island "$INSTALL_DIR/dynamic-island"
 chmod +x "$INSTALL_DIR/dynamic-island"
-if [ -f "scripts/power_menu.sh" ]; then
-    cp -f scripts/power_menu.sh "$INSTALL_DIR/dynamic-island-powermenu"
+if [ -f "scripts/power_menu.lua" ]; then
+    cp -f scripts/power_menu.lua "$INSTALL_DIR/dynamic-island-powermenu"
     chmod +x "$INSTALL_DIR/dynamic-island-powermenu"
+    mkdir -p "$CONFIG_DIR/scripts"
+    cp -f scripts/power_menu.lua "$CONFIG_DIR/scripts/power_menu.lua"
+    chmod +x "$CONFIG_DIR/scripts/power_menu.lua"
 fi
-if [ -f "scripts/sync_dark_mode.sh" ]; then
-    cp -f scripts/sync_dark_mode.sh "$INSTALL_DIR/dynamic-island-sync-dark"
+if [ -f "scripts/sync_dark_mode.lua" ]; then
+    cp -f scripts/sync_dark_mode.lua "$INSTALL_DIR/dynamic-island-sync-dark"
     chmod +x "$INSTALL_DIR/dynamic-island-sync-dark"
     mkdir -p "$CONFIG_DIR/scripts"
-    cp -f scripts/sync_dark_mode.sh "$CONFIG_DIR/scripts/sync_dark_mode.sh"
-    chmod +x "$CONFIG_DIR/scripts/sync_dark_mode.sh"
+    cp -f scripts/sync_dark_mode.lua "$CONFIG_DIR/scripts/sync_dark_mode.lua"
+    chmod +x "$CONFIG_DIR/scripts/sync_dark_mode.lua"
 fi
 echo -e "${COLOR_GREEN}[OK] Installed binary to:${COLOR_RESET} $INSTALL_DIR/dynamic-island"
 
@@ -126,25 +132,22 @@ if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
     echo -e "Consider adding: 'export PATH=\"\$HOME/.local/bin:\$PATH\"' to ~/.config/fish/config.fish or ~/.bashrc"
 fi
 
-# 6. Install Configuration, Themes & Shaders
-CONFIG_DIR="$HOME/.config/dynamic-island"
+# 6. Install Configuration & Shaders
 mkdir -p "$CONFIG_DIR"
-mkdir -p "$CONFIG_DIR/themes"
 mkdir -p "$CONFIG_DIR/shaders"
 
 if [ -f "shaders/nightmode.frag" ]; then
     cp -f shaders/nightmode.frag "$CONFIG_DIR/shaders/nightmode.frag"
 fi
 
-if [ ! -f "$CONFIG_DIR/config.json" ]; then
-    cp -f config/config.json "$CONFIG_DIR/config.json"
-    echo -e "${COLOR_GREEN}[OK] Created configuration:${COLOR_RESET} $CONFIG_DIR/config.json"
+if [ ! -f "$CONFIG_DIR/config.lua" ]; then
+    cp -f config/config.lua "$CONFIG_DIR/config.lua"
+    echo -e "${COLOR_GREEN}[OK] Created configuration:${COLOR_RESET} $CONFIG_DIR/config.lua"
 else
-    echo -e "${COLOR_BLUE}[INFO] Preserved existing config:${COLOR_RESET} $CONFIG_DIR/config.json"
+    echo -e "${COLOR_BLUE}[INFO] Preserved existing config:${COLOR_RESET} $CONFIG_DIR/config.lua"
 fi
 
-cp -rf themes/* "$CONFIG_DIR/themes/"
-echo -e "${COLOR_GREEN}[OK] Installed themes & shaders to:${COLOR_RESET} $CONFIG_DIR/"
+echo -e "${COLOR_GREEN}[OK] Installed configuration & shaders to:${COLOR_RESET} $CONFIG_DIR/"
 
 # 7. Configure Hyprland Autostart and Keybindings
 HYPR_DIR="$HOME/.config/hypr"

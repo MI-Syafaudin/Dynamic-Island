@@ -11,8 +11,10 @@ namespace di {
 
 class QuickActionModule : public ModuleBase {
 public:
-    QuickActionModule();
+    explicit QuickActionModule(const Config* config = nullptr);
     ~QuickActionModule() override;
+
+    void set_config(const Config* config) { m_config = config; }
 
     void update() override;
     void update_async();
@@ -41,6 +43,7 @@ public:
     void set_eye_comfort(bool enable);
 
 private:
+    const Config* m_config = nullptr;
     std::string get_shader_path() const;
     std::atomic<bool> m_wifi_active{false};
     std::atomic<bool> m_bt_active{false};

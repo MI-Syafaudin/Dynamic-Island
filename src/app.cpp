@@ -44,25 +44,12 @@ void App::play_alarm_sound() {
             dup2(devnull, STDERR_FILENO);
             close(devnull);
         }
-        // Multi-tier audio fallback: PipeWire -> PulseAudio -> Canberra -> ALSA -> ffplay -> terminal bell
-        const char* script =
-            "for s in "
-            "'/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga' "
-            "'/usr/share/sounds/freedesktop/stereo/complete.oga' "
-            "'/usr/share/sounds/freedesktop/stereo/bell.oga' "
-            "'/usr/share/sounds/alsa/Front_Center.wav'; do "
-            "  if [ -f \"$s\" ]; then "
-            "    pw-play \"$s\" 2>/dev/null && exit 0; "
-            "    paplay \"$s\" 2>/dev/null && exit 0; "
-            "    canberra-gtk-play -f \"$s\" 2>/dev/null && exit 0; "
-            "    aplay \"$s\" 2>/dev/null && exit 0; "
-            "    ffplay -nodisp -autoexit \"$s\" 2>/dev/null && exit 0; "
-            "  fi; "
-            "done; "
-            "canberra-gtk-play -i alarm-clock-elapsed 2>/dev/null && exit 0; "
-            "printf '\\a'; exit 0";
-        execlp("sh", "sh", "-c", script, (char*)nullptr);
-        _exit(1);
+        if (!m_config.sound_alarm.empty() && !m_config.audio_player.empty()) {
+            execlp(m_config.audio_player.c_str(), m_config.audio_player.c_str(), m_config.sound_alarm.c_str(), (char*)nullptr);
+        }
+        // Terminal bell fallback
+        printf("\a");
+        _exit(0);
     } else if (pid > 0) {
         m_sound_pid = pid;
     }
@@ -78,24 +65,12 @@ void App::play_ting_sound() {
             dup2(devnull, STDERR_FILENO);
             close(devnull);
         }
-        // Crisp "ting" sound: bell.oga -> complete.oga -> message-new-instant.oga -> terminal bell '\a'
-        const char* script =
-            "for s in "
-            "'/usr/share/sounds/freedesktop/stereo/bell.oga' "
-            "'/usr/share/sounds/freedesktop/stereo/complete.oga' "
-            "'/usr/share/sounds/freedesktop/stereo/message-new-instant.oga'; do "
-            "  if [ -f \"$s\" ]; then "
-            "    pw-play \"$s\" 2>/dev/null && exit 0; "
-            "    paplay \"$s\" 2>/dev/null && exit 0; "
-            "    canberra-gtk-play -f \"$s\" 2>/dev/null && exit 0; "
-            "    aplay \"$s\" 2>/dev/null && exit 0; "
-            "    ffplay -nodisp -autoexit \"$s\" 2>/dev/null && exit 0; "
-            "  fi; "
-            "done; "
-            "canberra-gtk-play -i bell 2>/dev/null && exit 0; "
-            "printf '\\a'; exit 0";
-        execlp("sh", "sh", "-c", script, (char*)nullptr);
-        _exit(1);
+        if (!m_config.sound_ting.empty() && !m_config.audio_player.empty()) {
+            execlp(m_config.audio_player.c_str(), m_config.audio_player.c_str(), m_config.sound_ting.c_str(), (char*)nullptr);
+        }
+        // Terminal bell fallback
+        printf("\a");
+        _exit(0);
     } else if (pid > 0) {
         m_sound_pid = pid;
     }
@@ -195,7 +170,7 @@ bool App::init(const std::string& config_path) {
     // Initialize modules
     if (m_config.modules.clock) m_clock_mod = std::make_shared<ClockModule>();
     if (m_config.modules.workspace) m_ws_mod = std::make_shared<WorkspaceModule>();
-    if (m_config.modules.active_window) m_win_mod = std::make_shared<WindowModule>();
+    if (m_config.modules.active_window) m_win_mod = std::make_shared<WindowModule>(&m_config);
     if (m_config.modules.audio) m_audio_mod = std::make_shared<AudioModule>();
     if (m_config.modules.media) m_media_mod = std::make_shared<MediaModule>();
     if (m_config.modules.battery) m_bat_mod = std::make_shared<BatteryModule>();
@@ -206,7 +181,7 @@ bool App::init(const std::string& config_path) {
     if (m_config.modules.system) m_sys_mod = std::make_shared<SystemModule>();
     if (m_config.modules.screenshot) m_shot_mod = std::make_shared<ScreenshotModule>();
     if (m_config.modules.notification) m_notif_mod = std::make_shared<NotificationModule>();
-    if (m_config.modules.quickaction) m_quick_mod = std::make_shared<QuickActionModule>();
+    if (m_config.modules.quickaction) m_quick_mod = std::make_shared<QuickActionModule>(&m_config);
 
     m_modules = {
         m_clock_mod, m_ws_mod, m_win_mod, m_audio_mod, m_media_mod,
@@ -260,6 +235,24 @@ bool App::init(const std::string& config_path) {
 }
 
 void App::query_brightness() {
+    if (m_backlight_path.empty() || m_backlight_max <= 0) {
+        if (std::filesystem::exists("/sys/class/backlight")) {
+            for (const auto& entry : std::filesystem::directory_iterator("/sys/class/backlight")) {
+                std::string max_p = (entry.path() / "max_brightness").string();
+                std::string cur_p = (entry.path() / "brightness").string();
+                if (std::filesystem::exists(max_p) && std::filesystem::exists(cur_p)) {
+                    std::ifstream mf(max_p);
+                    int max_val = 0;
+                    if (mf >> max_val && max_val > 0) {
+                        m_backlight_path = entry.path().string();
+                        m_backlight_max = max_val;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     if (!m_backlight_path.empty() && m_backlight_max > 0) {
         std::string cur_p = m_backlight_path + "/brightness";
         std::ifstream bf(cur_p);
@@ -1128,6 +1121,8 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
     }
     if (cmd == "reload") {
         m_config.load_from_file(Config::get_default_config_path());
+        if (m_win_mod) m_win_mod->set_config(&m_config);
+        if (m_quick_mod) m_quick_mod->set_config(&m_config);
         if (m_net_mod) m_net_mod->set_ping_target(m_config.ping_target);
         m_renderer.update_font(m_config);
         m_wayland.set_margin_top(m_config.margin_top);

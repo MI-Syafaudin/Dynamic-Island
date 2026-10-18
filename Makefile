@@ -3,7 +3,7 @@ CC ?= gcc
 CXXFLAGS ?= -std=c++20 -O3 -flto -Wall -Wextra -pthread
 CFLAGS ?= -O3 -flto -Wall
 
-PKG_DEPS = wayland-client cairo pango pangocairo
+PKG_DEPS = wayland-client cairo pango pangocairo luajit
 PKG_CFLAGS = $(shell pkg-config --cflags $(PKG_DEPS))
 PKG_LIBS = $(shell pkg-config --libs $(PKG_DEPS)) -lm
 
@@ -61,20 +61,22 @@ clean:
 install: $(BIN)
 	install -d $(DESTDIR)/usr/local/bin
 	install -m 755 $(BIN) $(DESTDIR)/usr/local/bin/dynamic-island
-	install -m 755 scripts/sync_dark_mode.sh $(DESTDIR)/usr/local/bin/dynamic-island-sync-dark
+	install -m 755 scripts/sync_dark_mode.lua $(DESTDIR)/usr/local/bin/dynamic-island-sync-dark
+	install -m 755 scripts/power_menu.lua $(DESTDIR)/usr/local/bin/dynamic-island-powermenu
 	install -d $(DESTDIR)/etc/xdg/dynamic-island
-	install -m 644 config/config.json $(DESTDIR)/etc/xdg/dynamic-island/config.json
+	install -m 644 config/config.lua $(DESTDIR)/etc/xdg/dynamic-island/config.lua
 
 user-install: $(BIN)
 	install -d $(HOME)/.local/bin
 	install -m 755 $(BIN) $(HOME)/.local/bin/dynamic-island
-	install -m 755 scripts/power_menu.sh $(HOME)/.local/bin/dynamic-island-powermenu
-	install -m 755 scripts/sync_dark_mode.sh $(HOME)/.local/bin/dynamic-island-sync-dark
+	install -m 755 scripts/power_menu.lua $(HOME)/.local/bin/dynamic-island-powermenu
+	install -m 755 scripts/sync_dark_mode.lua $(HOME)/.local/bin/dynamic-island-sync-dark
 	install -d $(HOME)/.config/dynamic-island
 	install -d $(HOME)/.config/dynamic-island/scripts
-	install -m 755 scripts/sync_dark_mode.sh $(HOME)/.config/dynamic-island/scripts/sync_dark_mode.sh
+	install -m 755 scripts/sync_dark_mode.lua $(HOME)/.config/dynamic-island/scripts/sync_dark_mode.lua
+	install -m 755 scripts/power_menu.lua $(HOME)/.config/dynamic-island/scripts/power_menu.lua
 	install -d $(HOME)/.config/dynamic-island/shaders
-	install -m 644 config/config.json $(HOME)/.config/dynamic-island/config.json
+	install -m 644 config/config.lua $(HOME)/.config/dynamic-island/config.lua
 	install -m 644 shaders/nightmode.frag $(HOME)/.config/dynamic-island/shaders/nightmode.frag
 
 .PHONY: all clean install user-install

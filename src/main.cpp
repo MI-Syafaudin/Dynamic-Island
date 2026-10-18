@@ -47,7 +47,7 @@ static void print_help(const char* prog) {
               << "  " << prog << " timer <dur> [lbl]   Quick timer shortcut (e.g. timer 15m)\n"
               << "  " << prog << " dark [on|off]       Toggle or set Dark Mode\n"
               << "  " << prog << " eye [on|off]        Toggle or set Eye Comfort mode (warm screen filter)\n"
-              << "  " << prog << " reload              Reload config.json\n"
+              << "  " << prog << " reload              Reload config.lua\n"
               << "  " << prog << " quit                Stop running daemon\n"
               << "  " << prog << " version             Show version and author info\n"
               << "  " << prog << " --help              Show this help message\n";
