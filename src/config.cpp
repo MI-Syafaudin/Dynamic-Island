@@ -97,6 +97,7 @@ bool Config::load_default() {
 
     modules = ModuleSettings();
     timeouts = TimeoutSettings();
+    monitor = MonitorSettings();
 
     // Default basic window icons
     if (window_icons.empty()) {
@@ -358,6 +359,32 @@ bool Config::load_from_file(const std::string& path) {
         timeouts.auto_collapse_ms = get_lua_int(L, "auto_collapse_ms", timeouts.auto_collapse_ms);
     }
     lua_pop(L, 1);
+
+    // Monitor & Performance Settings
+    lua_getfield(L, -1, "monitor");
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "performance");
+    }
+    if (lua_istable(L, -1)) {
+        monitor.system_expanded_interval_ms = get_lua_int(L, "system_expanded_interval_ms", monitor.system_expanded_interval_ms);
+        monitor.system_idle_interval_ms = get_lua_int(L, "system_idle_interval_ms", monitor.system_idle_interval_ms);
+        monitor.network_expanded_interval_ms = get_lua_int(L, "network_expanded_interval_ms", monitor.network_expanded_interval_ms);
+        monitor.cpu_smoothing_alpha = get_lua_double(L, "cpu_smoothing_alpha", monitor.cpu_smoothing_alpha);
+        monitor.gpu_smoothing_alpha = get_lua_double(L, "gpu_smoothing_alpha", monitor.gpu_smoothing_alpha);
+        monitor.gpu_name = get_lua_string(L, "gpu_name", monitor.gpu_name);
+        monitor.thermal_path = get_lua_string(L, "thermal_path", monitor.thermal_path);
+        monitor.ping_target = get_lua_string(L, "ping_target", monitor.ping_target);
+        monitor.ping_label = get_lua_string(L, "ping_label", monitor.ping_label);
+    }
+    lua_pop(L, 1);
+
+    // Keep top-level ping_target in sync if overridden or vice-versa
+    if (!ping_target.empty() && monitor.ping_target == "1.1.1.1" && ping_target != "1.1.1.1") {
+        monitor.ping_target = ping_target;
+    } else if (!monitor.ping_target.empty()) {
+        ping_target = monitor.ping_target;
+    }
 
     // Window icon mappings: array of { pattern = "...", icon = "..." }
     lua_getfield(L, -1, "window_icons");

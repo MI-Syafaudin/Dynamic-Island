@@ -50,6 +50,20 @@ struct TimeoutSettings {
     int auto_collapse_ms = 5000;
 };
 
+struct MonitorSettings {
+    int system_expanded_interval_ms = 250;
+    int system_idle_interval_ms = 2500;
+    int network_expanded_interval_ms = 400;
+
+    double cpu_smoothing_alpha = 0.80;
+    double gpu_smoothing_alpha = 0.75;
+
+    std::string gpu_name = "";
+    std::string thermal_path = "";
+    std::string ping_target = "1.1.1.1";
+    std::string ping_label = "Cloudflare";
+};
+
 class Config {
 public:
     std::string position = "top-center";
@@ -76,6 +90,7 @@ public:
     ThemeColors colors;
     ModuleSettings modules;
     TimeoutSettings timeouts;
+    MonitorSettings monitor;
 
     // Custom or pre-resolved system binaries & sounds
     std::string audio_player;

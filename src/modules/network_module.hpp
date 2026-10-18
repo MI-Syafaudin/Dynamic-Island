@@ -29,7 +29,17 @@ public:
 
     void on_expanded();
     void on_collapsed();
-    void set_ping_target(const std::string& target) { m_ping_target = target; }
+    void set_ping_target(const std::string& target) {
+        std::lock_guard<std::mutex> lock(m_metrics_mutex);
+        m_ping_target = target;
+    }
+    void set_ping_label(const std::string& label) {
+        std::lock_guard<std::mutex> lock(m_metrics_mutex);
+        m_ping_label = label;
+    }
+    void set_expanded_interval(int ms) {
+        m_expanded_interval_ms = (ms > 50) ? ms : 400;
+    }
 
     bool is_connected() const {
         std::lock_guard<std::mutex> lock(m_metrics_mutex);
@@ -46,6 +56,14 @@ public:
     std::string get_ip() const {
         std::lock_guard<std::mutex> lock(m_metrics_mutex);
         return m_ip;
+    }
+    std::string get_interface() const {
+        std::lock_guard<std::mutex> lock(m_metrics_mutex);
+        return m_interface;
+    }
+    std::string get_gateway_ip() const {
+        std::lock_guard<std::mutex> lock(m_metrics_mutex);
+        return m_gateway_ip;
     }
 
     double get_ping() const;
@@ -64,6 +82,12 @@ public:
 
     static std::string format_speed(double bytes_per_sec);
 
+    // Native Socket ping engine: ICMP unprivileged -> TCP SYN fallback
+    static uint16_t calculate_checksum(const void* b, int len);
+    static bool measure_native_icmp(const std::string& ip_str, double& rtt_ms, int timeout_ms);
+    static bool measure_native_tcp(const std::string& ip_str, int port, double& rtt_ms, int timeout_ms);
+    static bool ping_address_with_fallback(const std::string& ip_str, const std::vector<int>& tcp_ports, double& rtt_ms, int timeout_ms = 120);
+
 private:
     bool m_connected = false;
     bool m_is_wifi = false;
@@ -74,8 +98,14 @@ private:
     std::chrono::steady_clock::time_point m_last_nmcli_query;
     bool m_had_gateway = false;
 
+    // Persistent file descriptors for zero-allocation pread()
+    int m_fd_net_dev = -1;
+    int m_fd_wireless = -1;
+
     // Real-time ping, jitter, packet loss, gateway, bandwidth, and wifi metrics
     std::string m_ping_target = "1.1.1.1";
+    std::string m_ping_label = "Cloudflare";
+    int m_expanded_interval_ms = 400;
     std::deque<PingSample> m_ping_history;
     mutable std::mutex m_metrics_mutex;
     double m_ping = 0.0;

@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <ifaddrs.h>
 #include <netinet/in.h>
+#include <netinet/ip_icmp.h>
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <cstring>
@@ -10,10 +11,156 @@
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
+#include <fcntl.h>
+#include <unistd.h>
+#include <poll.h>
+#include <cerrno>
 
 namespace di {
 
+uint16_t NetworkModule::calculate_checksum(const void* b, int len) {
+    const uint16_t* buf = reinterpret_cast<const uint16_t*>(b);
+    uint32_t sum = 0;
+    while (len > 1) {
+        sum += *buf++;
+        len -= 2;
+    }
+    if (len == 1) {
+        sum += *reinterpret_cast<const uint8_t*>(buf);
+    }
+    sum = (sum >> 16) + (sum & 0xFFFF);
+    sum += (sum >> 16);
+    return static_cast<uint16_t>(~sum);
+}
+
+bool NetworkModule::measure_native_icmp(const std::string& ip_str, double& rtt_ms, int timeout_ms) {
+    int sock = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_ICMP);
+    if (sock < 0) {
+        return false;
+    }
+
+    struct sockaddr_in dest;
+    std::memset(&dest, 0, sizeof(dest));
+    dest.sin_family = AF_INET;
+    if (inet_pton(AF_INET, ip_str.c_str(), &dest.sin_addr) <= 0) {
+        close(sock);
+        return false;
+    }
+
+    struct icmphdr icmp;
+    std::memset(&icmp, 0, sizeof(icmp));
+    icmp.type = ICMP_ECHO;
+    icmp.code = 0;
+    icmp.un.echo.id = htons(static_cast<uint16_t>(getpid() & 0xFFFF));
+    icmp.un.echo.sequence = htons(1);
+    icmp.checksum = calculate_checksum(&icmp, sizeof(icmp));
+
+    auto t0 = std::chrono::steady_clock::now();
+    ssize_t sent = sendto(sock, &icmp, sizeof(icmp), 0, reinterpret_cast<struct sockaddr*>(&dest), sizeof(dest));
+    if (sent < 0) {
+        close(sock);
+        return false;
+    }
+
+    struct pollfd pfd;
+    pfd.fd = sock;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+
+    int ret = poll(&pfd, 1, timeout_ms);
+    if (ret > 0 && (pfd.revents & POLLIN)) {
+        char recv_buf[256];
+        struct sockaddr_in from;
+        socklen_t from_len = sizeof(from);
+        ssize_t n = recvfrom(sock, recv_buf, sizeof(recv_buf), 0, reinterpret_cast<struct sockaddr*>(&from), &from_len);
+        auto t1 = std::chrono::steady_clock::now();
+        if (n >= static_cast<ssize_t>(sizeof(struct icmphdr))) {
+            struct icmphdr* r_icmp = reinterpret_cast<struct icmphdr*>(recv_buf);
+            if (r_icmp->type == ICMP_ECHOREPLY) {
+                rtt_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+                close(sock);
+                return true;
+            }
+        }
+    }
+
+    close(sock);
+    return false;
+}
+
+bool NetworkModule::measure_native_tcp(const std::string& ip_str, int port, double& rtt_ms, int timeout_ms) {
+    int sock = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (sock < 0) return false;
+
+    struct sockaddr_in dest;
+    std::memset(&dest, 0, sizeof(dest));
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons(static_cast<uint16_t>(port));
+    if (inet_pton(AF_INET, ip_str.c_str(), &dest.sin_addr) <= 0) {
+        close(sock);
+        return false;
+    }
+
+    auto t0 = std::chrono::steady_clock::now();
+    int rc = connect(sock, reinterpret_cast<struct sockaddr*>(&dest), sizeof(dest));
+    if (rc == 0) {
+        auto t1 = std::chrono::steady_clock::now();
+        rtt_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        close(sock);
+        return true;
+    }
+
+    if (errno != EINPROGRESS) {
+        close(sock);
+        return false;
+    }
+
+    struct pollfd pfd;
+    pfd.fd = sock;
+    pfd.events = POLLOUT;
+    pfd.revents = 0;
+
+    int ret = poll(&pfd, 1, timeout_ms);
+    if (ret > 0 && (pfd.revents & (POLLOUT | POLLERR | POLLHUP))) {
+        int err = 0;
+        socklen_t len = sizeof(err);
+        if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &err, &len) == 0) {
+            // In TCP handshake, ECONNREFUSED still confirms remote host responded with TCP RST within 1 RTT!
+            if (err == 0 || err == ECONNREFUSED) {
+                auto t1 = std::chrono::steady_clock::now();
+                rtt_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+                close(sock);
+                return true;
+            }
+        }
+    }
+
+    close(sock);
+    return false;
+}
+
+bool NetworkModule::ping_address_with_fallback(const std::string& ip_str, const std::vector<int>& tcp_ports, double& rtt_ms, int timeout_ms) {
+    if (ip_str.empty()) return false;
+
+    // 1. Linux Unprivileged ICMP Socket (Zero-privilege kernel socket)
+    if (measure_native_icmp(ip_str, rtt_ms, timeout_ms)) {
+        return true;
+    }
+
+    // 2. High-speed Non-blocking TCP SYN Handshake Fallback (No root / unprivileged)
+    for (int port : tcp_ports) {
+        if (measure_native_tcp(ip_str, port, rtt_ms, timeout_ms)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 NetworkModule::NetworkModule() {
+    m_fd_net_dev = open("/proc/net/dev", O_RDONLY | O_CLOEXEC);
+    m_fd_wireless = open("/proc/net/wireless", O_RDONLY | O_CLOEXEC);
+
     query_network();
     m_worker_running = true;
     m_worker_thread = std::thread(&NetworkModule::worker_loop, this);
@@ -27,6 +174,15 @@ NetworkModule::~NetworkModule() {
     m_thread_cv.notify_all();
     if (m_worker_thread.joinable()) {
         m_worker_thread.join();
+    }
+
+    if (m_fd_net_dev >= 0) {
+        close(m_fd_net_dev);
+        m_fd_net_dev = -1;
+    }
+    if (m_fd_wireless >= 0) {
+        close(m_fd_wireless);
+        m_fd_wireless = -1;
     }
 }
 
@@ -189,17 +345,20 @@ void NetworkModule::draw_compact(cairo_t* cr, PangoFontDescription* font_desc, c
 }
 
 void NetworkModule::query_bandwidth() {
-    FILE* fp = fopen("/proc/net/dev", "r");
-    if (!fp) return;
+    if (m_fd_net_dev < 0) {
+        m_fd_net_dev = open("/proc/net/dev", O_RDONLY | O_CLOEXEC);
+        if (m_fd_net_dev < 0) return;
+    }
 
-    char line[256];
+    char buf[2048];
+    ssize_t n = pread(m_fd_net_dev, buf, sizeof(buf) - 1, 0);
+    if (n <= 0) return;
+    buf[n] = '\0';
+
     auto now = std::chrono::steady_clock::now();
     uint64_t cur_rx = 0;
     uint64_t cur_tx = 0;
     bool found = false;
-
-    if (!fgets(line, sizeof(line), fp)) { fclose(fp); return; }
-    if (!fgets(line, sizeof(line), fp)) { fclose(fp); return; }
 
     std::string iface_target;
     {
@@ -207,32 +366,38 @@ void NetworkModule::query_bandwidth() {
         iface_target = m_interface;
     }
 
-    while (fgets(line, sizeof(line), fp)) {
+    char* line = buf;
+    while (line && *line) {
+        char* next_line = strchr(line, '\n');
+        if (next_line) *next_line = '\0';
+
         char* colon = strchr(line, ':');
-        if (!colon) continue;
+        if (colon) {
+            *colon = '\0';
+            char* p = line;
+            while (*p == ' ') p++;
 
-        *colon = '\0';
-        char* p = line;
-        while (*p == ' ') p++;
-
-        if (iface_target.empty() || strcmp(p, iface_target.c_str()) == 0) {
-            unsigned long long r_b = 0, r_p = 0, r_e = 0, r_d = 0, r_f = 0, r_fr = 0, r_c = 0, r_m = 0;
-            unsigned long long t_b = 0;
-            if (sscanf(colon + 1, "%llu %llu %llu %llu %llu %llu %llu %llu %llu",
-                       &r_b, &r_p, &r_e, &r_d, &r_f, &r_fr, &r_c, &r_m, &t_b) >= 9) {
-                cur_rx = r_b;
-                cur_tx = t_b;
-                found = true;
-                break;
+            if (iface_target.empty() || strcmp(p, iface_target.c_str()) == 0) {
+                unsigned long long r_b = 0, r_p = 0, r_e = 0, r_d = 0, r_f = 0, r_fr = 0, r_c = 0, r_m = 0;
+                unsigned long long t_b = 0;
+                if (sscanf(colon + 1, "%llu %llu %llu %llu %llu %llu %llu %llu %llu",
+                           &r_b, &r_p, &r_e, &r_d, &r_f, &r_fr, &r_c, &r_m, &t_b) >= 9) {
+                    cur_rx = r_b;
+                    cur_tx = t_b;
+                    found = true;
+                    break;
+                }
             }
         }
+
+        if (next_line) line = next_line + 1;
+        else break;
     }
-    fclose(fp);
 
     if (found) {
         if (m_last_bandwidth_time.time_since_epoch().count() > 0) {
             double dt = std::chrono::duration<double>(now - m_last_bandwidth_time).count();
-            if (dt > 0.2) {
+            if (dt > 0.1) {
                 double rx_diff = (cur_rx >= m_last_rx_bytes) ? static_cast<double>(cur_rx - m_last_rx_bytes) : 0.0;
                 double tx_diff = (cur_tx >= m_last_tx_bytes) ? static_cast<double>(cur_tx - m_last_tx_bytes) : 0.0;
 
@@ -260,32 +425,46 @@ void NetworkModule::query_wifi_signal() {
         return;
     }
 
-    FILE* f = fopen("/proc/net/wireless", "r");
-    if (f) {
-        char line[256];
-        int pct = 0;
-        int dbm = 0;
-        bool found = false;
-        while (fgets(line, sizeof(line), f)) {
-            char* colon = strchr(line, ':');
-            if (colon) {
-                int status = 0;
-                float link_qual = 0;
-                float level = 0;
-                if (sscanf(colon + 1, "%d %f %f", &status, &link_qual, &level) >= 3) {
-                    pct = std::clamp(static_cast<int>(std::round(link_qual * 100.0 / 70.0)), 0, 100);
-                    dbm = static_cast<int>(std::round(level));
-                    found = true;
-                    break;
-                }
+    if (m_fd_wireless < 0) {
+        m_fd_wireless = open("/proc/net/wireless", O_RDONLY | O_CLOEXEC);
+        if (m_fd_wireless < 0) return;
+    }
+
+    char buf[512];
+    ssize_t n = pread(m_fd_wireless, buf, sizeof(buf) - 1, 0);
+    if (n <= 0) return;
+    buf[n] = '\0';
+
+    int pct = 0;
+    int dbm = 0;
+    bool found = false;
+
+    char* line = buf;
+    while (line && *line) {
+        char* next_line = strchr(line, '\n');
+        if (next_line) *next_line = '\0';
+
+        char* colon = strchr(line, ':');
+        if (colon) {
+            int status = 0;
+            float link_qual = 0;
+            float level = 0;
+            if (sscanf(colon + 1, "%d %f %f", &status, &link_qual, &level) >= 3) {
+                pct = std::clamp(static_cast<int>(std::round(link_qual * 100.0 / 70.0)), 0, 100);
+                dbm = static_cast<int>(std::round(level));
+                found = true;
+                break;
             }
         }
-        fclose(f);
-        if (found) {
-            std::lock_guard<std::mutex> lock(m_metrics_mutex);
-            m_wifi_signal_pct = pct;
-            m_wifi_signal_dbm = dbm;
-        }
+
+        if (next_line) line = next_line + 1;
+        else break;
+    }
+
+    if (found) {
+        std::lock_guard<std::mutex> lock(m_metrics_mutex);
+        m_wifi_signal_pct = pct;
+        m_wifi_signal_dbm = dbm;
     }
 }
 
@@ -297,22 +476,9 @@ void NetworkModule::measure_gateway_ping() {
     }
     if (gw.empty()) return;
 
-    std::string cmd = "ping -c 1 -W 1 " + gw + " 2>/dev/null";
-    FILE* fp = popen(cmd.c_str(), "r");
     double gw_rtt = 0.0;
-    bool success = false;
-    if (fp) {
-        char buf[256];
-        while (fgets(buf, sizeof(buf), fp)) {
-            const char* pos = strstr(buf, "time=");
-            if (pos) {
-                if (sscanf(pos + 5, "%lf", &gw_rtt) == 1) {
-                    success = true;
-                }
-            }
-        }
-        pclose(fp);
-    }
+    // Native unprivileged ICMP -> fallback to port 53 / 80 non-blocking TCP SYN
+    bool success = ping_address_with_fallback(gw, {53, 80}, gw_rtt, 100);
 
     std::lock_guard<std::mutex> lock(m_metrics_mutex);
     if (success) {
@@ -327,8 +493,8 @@ void NetworkModule::worker_loop() {
         bool active = false;
         {
             std::unique_lock<std::mutex> lock(m_thread_mutex);
-            int wait_ms = m_is_active ? 750 : 5000;
-            m_thread_cv.wait_for(lock, std::chrono::milliseconds(wait_ms), [this]() {
+            // In Idle mode: Zero polling for ping or bandwidth, wait up to 5s for network route changes or expand
+            m_thread_cv.wait_for(lock, std::chrono::milliseconds(5000), [this]() {
                 return !m_worker_running || m_is_active;
             });
             if (!m_worker_running) break;
@@ -365,7 +531,8 @@ void NetworkModule::worker_loop() {
             m_dirty = true;
 
             std::unique_lock<std::mutex> lock(m_thread_mutex);
-            m_thread_cv.wait_for(lock, std::chrono::milliseconds(600), [this]() {
+            int interval = (m_expanded_interval_ms > 50) ? m_expanded_interval_ms : 400;
+            m_thread_cv.wait_for(lock, std::chrono::milliseconds(interval), [this]() {
                 return !m_worker_running || !m_is_active;
             });
         }
@@ -373,92 +540,54 @@ void NetworkModule::worker_loop() {
 }
 
 void NetworkModule::measure_ping() {
-    std::string target = m_ping_target.empty() ? "1.1.1.1" : m_ping_target;
-    std::string cmd = "ping -c 2 -i 0.2 -W 1 " + target + " 2>/dev/null";
-
-    FILE* fp = popen(cmd.c_str(), "r");
-    bool success = false;
-    double rtt = 0.0;
-    double jitter = 0.0;
-    double loss = 0.0;
-    bool has_stats = false;
-    bool has_loss = false;
-
-    if (fp) {
-        char buf[256];
-        while (fgets(buf, sizeof(buf), fp)) {
-            const char* time_pos = strstr(buf, "time=");
-            if (time_pos) {
-                double single_rtt = 0.0;
-                if (sscanf(time_pos + 5, "%lf", &single_rtt) == 1) {
-                    rtt = single_rtt;
-                    success = true;
-                }
-            }
-            if (strstr(buf, "min/avg/max/mdev")) {
-                const char* eq = strchr(buf, '=');
-                if (eq) {
-                    double p_min = 0, p_avg = 0, p_max = 0, p_mdev = 0;
-                    if (sscanf(eq + 1, "%lf/%lf/%lf/%lf", &p_min, &p_avg, &p_max, &p_mdev) == 4) {
-                        rtt = p_avg;
-                        jitter = p_mdev;
-                        has_stats = true;
-                        success = true;
-                    }
-                }
-            }
-            const char* loss_pos = strstr(buf, "packet loss");
-            if (loss_pos) {
-                const char* pct = strchr(buf, '%');
-                if (pct) {
-                    const char* start = pct - 1;
-                    while (start > buf && *(start - 1) != ' ' && *(start - 1) != ',') start--;
-                    if (sscanf(start, "%lf", &loss) == 1) {
-                        has_loss = true;
-                    }
-                }
-            }
-        }
-        int rc = pclose(fp);
-        if (rc != 0 && !has_stats) {
-            success = false;
-        }
+    std::string target;
+    {
+        std::lock_guard<std::mutex> lock(m_metrics_mutex);
+        target = m_ping_target.empty() ? "1.1.1.1" : m_ping_target;
     }
 
+    // Native unprivileged ICMP -> fallback to port 53 / 443 non-blocking TCP SYN
+    // Perform 2 quick consecutive measurements for instantaneous RTT and jitter
+    double rtt1 = 0.0;
+    bool s1 = ping_address_with_fallback(target, {53, 443}, rtt1, 120);
+
+    double rtt2 = 0.0;
+    bool s2 = ping_address_with_fallback(target, {53, 443}, rtt2, 120);
+
     std::lock_guard<std::mutex> lock(m_metrics_mutex);
-    m_ping_history.push_back({success, rtt});
-    if (m_ping_history.size() > 10) {
+    if (s1) m_ping_history.push_back({true, rtt1});
+    else m_ping_history.push_back({false, 0.0});
+
+    if (s2) m_ping_history.push_back({true, rtt2});
+    else m_ping_history.push_back({false, 0.0});
+
+    while (m_ping_history.size() > 10) {
         m_ping_history.pop_front();
     }
 
-    if (success) {
-        m_ping = rtt;
-        if (has_stats) {
-            m_jitter = jitter;
-        } else {
-            std::vector<double> succ_rtts;
-            for (const auto& s : m_ping_history) {
-                if (s.success) succ_rtts.push_back(s.rtt);
+    if (s1 || s2) {
+        m_ping = s2 ? rtt2 : rtt1;
+
+        std::vector<double> succ_rtts;
+        for (const auto& s : m_ping_history) {
+            if (s.success) succ_rtts.push_back(s.rtt);
+        }
+        if (succ_rtts.size() >= 2) {
+            double diff_sum = 0.0;
+            for (size_t i = 1; i < succ_rtts.size(); ++i) {
+                diff_sum += std::abs(succ_rtts[i] - succ_rtts[i - 1]);
             }
-            if (succ_rtts.size() >= 2) {
-                double diff_sum = 0.0;
-                for (size_t i = 1; i < succ_rtts.size(); ++i) {
-                    diff_sum += std::abs(succ_rtts[i] - succ_rtts[i - 1]);
-                }
-                m_jitter = diff_sum / (succ_rtts.size() - 1);
-            }
+            m_jitter = diff_sum / (succ_rtts.size() - 1);
+        } else if (s1 && s2) {
+            m_jitter = std::abs(rtt2 - rtt1);
         }
     }
 
-    if (has_loss) {
-        m_packet_loss = loss;
-    } else {
-        int lost = 0;
-        for (const auto& s : m_ping_history) {
-            if (!s.success) lost++;
-        }
-        m_packet_loss = m_ping_history.empty() ? 0.0 : (lost * 100.0) / m_ping_history.size();
+    int lost = 0;
+    for (const auto& s : m_ping_history) {
+        if (!s.success) lost++;
     }
+    m_packet_loss = m_ping_history.empty() ? 0.0 : (lost * 100.0) / m_ping_history.size();
 
     m_has_ping_data = true;
     m_dirty = true;
@@ -561,6 +690,8 @@ void NetworkModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, 
     std::string cur_ip;
     std::string cur_iface;
     std::string cur_gw;
+    std::string cur_ping_target;
+    std::string cur_ping_label;
     {
         std::lock_guard<std::mutex> lock(m_metrics_mutex);
         ping_val = m_ping;
@@ -578,6 +709,8 @@ void NetworkModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, 
         cur_ip = m_ip;
         cur_iface = m_interface;
         cur_gw = m_gateway_ip;
+        cur_ping_target = m_ping_target;
+        cur_ping_label = m_ping_label;
     }
 
     // 1. Title Row: Left (SSID / Status), Right (Wi-Fi Signal Badge)
@@ -818,7 +951,7 @@ void NetworkModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, 
     PangoFontDescription* footer_desc = pango_font_description_copy(font_desc);
     pango_font_description_set_size(footer_desc, 8 * PANGO_SCALE);
     pango_layout_set_font_description(layout, footer_desc);
-    std::string footer_str = "● Target: " + (m_ping_target.empty() ? "1.1.1.1" : m_ping_target) + " (Cloudflare) • Real-Time";
+    std::string footer_str = "● Target: " + (cur_ping_target.empty() ? "1.1.1.1" : cur_ping_target) + " (" + (cur_ping_label.empty() ? "Cloudflare" : cur_ping_label) + ") • Real-Time";
     pango_layout_set_text(layout, footer_str.c_str(), -1);
     int ftw, fth;
     pango_layout_get_pixel_size(layout, &ftw, &fth);

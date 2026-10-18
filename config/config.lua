@@ -113,6 +113,26 @@ config.timeouts = {
 }
 
 -- ------------------------------------------------------------------------------
+-- Hardware & Network Monitoring Performance
+-- ------------------------------------------------------------------------------
+config.monitor = {
+    -- Interval update dalam milidetik (otomatis melambat saat Idle untuk hemat CPU)
+    system_expanded_interval_ms  = 250,
+    system_idle_interval_ms      = 2500,
+    network_expanded_interval_ms = 400,
+
+    -- Tuning responsivitas EMA smoothing (0.0 - 1.0, makin tinggi makin instan)
+    cpu_smoothing_alpha = 0.80,
+    gpu_smoothing_alpha = 0.75,
+
+    -- Override path sensor hardware (opsional, otomatis terdeteksi jika kosong)
+    gpu_name       = "", -- kosong = auto-detect via sysfs
+    thermal_path   = "", -- kosong = auto-detect /sys/class/thermal/thermal_zone0/temp
+    ping_target    = "1.1.1.1",
+    ping_label     = "Cloudflare",
+}
+
+-- ------------------------------------------------------------------------------
 -- Audio & Nightlight Execution Settings
 -- Leave empty ("") for automatic pre-resolving at startup
 -- ------------------------------------------------------------------------------

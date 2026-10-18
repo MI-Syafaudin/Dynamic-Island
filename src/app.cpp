@@ -176,9 +176,19 @@ bool App::init(const std::string& config_path) {
     if (m_config.modules.battery) m_bat_mod = std::make_shared<BatteryModule>();
     if (m_config.modules.network) {
         m_net_mod = std::make_shared<NetworkModule>();
-        m_net_mod->set_ping_target(m_config.ping_target);
+        m_net_mod->set_ping_target(m_config.monitor.ping_target.empty() ? m_config.ping_target : m_config.monitor.ping_target);
+        m_net_mod->set_ping_label(m_config.monitor.ping_label);
+        m_net_mod->set_expanded_interval(m_config.monitor.network_expanded_interval_ms);
     }
-    if (m_config.modules.system) m_sys_mod = std::make_shared<SystemModule>();
+    if (m_config.modules.system) {
+        m_sys_mod = std::make_shared<SystemModule>();
+        m_sys_mod->configure(
+            m_config.monitor.cpu_smoothing_alpha,
+            m_config.monitor.gpu_smoothing_alpha,
+            m_config.monitor.gpu_name,
+            m_config.monitor.thermal_path
+        );
+    }
     if (m_config.modules.screenshot) m_shot_mod = std::make_shared<ScreenshotModule>();
     if (m_config.modules.notification) m_notif_mod = std::make_shared<NotificationModule>();
     if (m_config.modules.quickaction) m_quick_mod = std::make_shared<QuickActionModule>(&m_config);
@@ -489,7 +499,7 @@ void App::expand_to(IslandMode mode, int timeout_ms) {
     m_anim_start = std::chrono::steady_clock::now();
 
     if (mode == IslandMode::Expanded_System && m_sys_mod) {
-        m_sys_mod->update();
+        m_sys_mod->update(true);
         m_last_system_update = m_anim_start;
     }
     if (mode == IslandMode::Expanded_Media && m_media_mod) {
@@ -1123,7 +1133,19 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
         m_config.load_from_file(Config::get_default_config_path());
         if (m_win_mod) m_win_mod->set_config(&m_config);
         if (m_quick_mod) m_quick_mod->set_config(&m_config);
-        if (m_net_mod) m_net_mod->set_ping_target(m_config.ping_target);
+        if (m_net_mod) {
+            m_net_mod->set_ping_target(m_config.monitor.ping_target.empty() ? m_config.ping_target : m_config.monitor.ping_target);
+            m_net_mod->set_ping_label(m_config.monitor.ping_label);
+            m_net_mod->set_expanded_interval(m_config.monitor.network_expanded_interval_ms);
+        }
+        if (m_sys_mod) {
+            m_sys_mod->configure(
+                m_config.monitor.cpu_smoothing_alpha,
+                m_config.monitor.gpu_smoothing_alpha,
+                m_config.monitor.gpu_name,
+                m_config.monitor.thermal_path
+            );
+        }
         m_renderer.update_font(m_config);
         m_wayland.set_margin_top(m_config.margin_top);
         update_idle_dimensions(false);
@@ -1180,9 +1202,9 @@ void App::run() {
         } else if (m_mode == IslandMode::Expanded_Media && m_media_mod && m_media_mod->needs_marquee_animation()) {
             timeout_ms = 20; // 50 FPS smooth marquee
         } else if (m_mode == IslandMode::Expanded_Network) {
-            timeout_ms = 250; // Real-time network monitor tick
+            timeout_ms = std::clamp(m_config.monitor.network_expanded_interval_ms, 50, 1000); // Real-time network monitor tick
         } else if (m_mode == IslandMode::Expanded_System) {
-            timeout_ms = 1500; // System monitor tick
+            timeout_ms = std::clamp(m_config.monitor.system_expanded_interval_ms, 50, 1000); // Fast system monitor tick (btop-like)
         }
 
         m_wayland.prepare_read();
@@ -1365,23 +1387,30 @@ void App::run() {
         // Periodic Expanded Network update (real-time ping/jitter/loss/bandwidth)
         if (m_net_mod && m_mode == IslandMode::Expanded_Network) {
             auto elapsed_net = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_last_network_update).count();
-            if (m_net_mod->check_and_clear_dirty() || elapsed_net >= 500) {
+            int net_interval = std::clamp(m_config.monitor.network_expanded_interval_ms, 50, 1000);
+            if (m_net_mod->check_and_clear_dirty() || elapsed_net >= net_interval) {
                 m_last_network_update = now;
                 render_current_state();
             }
         }
 
         // Periodic System Monitor update (both Idle compact and Expanded_System)
-        if (m_sys_mod && std::chrono::duration_cast<std::chrono::milliseconds>(now - m_last_system_update).count() >= 1500) {
-            m_last_system_update = now;
-            int old_cpu = m_sys_mod->get_cpu_percent();
-            m_sys_mod->update(m_mode == IslandMode::Expanded_System);
-            int new_cpu = m_sys_mod->get_cpu_percent();
+        if (m_sys_mod) {
+            int sys_interval = (m_mode == IslandMode::Expanded_System)
+                ? std::clamp(m_config.monitor.system_expanded_interval_ms, 50, 2000)
+                : std::clamp(m_config.monitor.system_idle_interval_ms, 500, 10000);
 
-            if (m_mode == IslandMode::Expanded_System) {
-                render_current_state();
-            } else if (m_mode == IslandMode::Idle && old_cpu != new_cpu) {
-                render_current_state();
+            if (std::chrono::duration_cast<std::chrono::milliseconds>(now - m_last_system_update).count() >= sys_interval) {
+                m_last_system_update = now;
+                int old_cpu = m_sys_mod->get_cpu_percent();
+                m_sys_mod->update(m_mode == IslandMode::Expanded_System);
+                int new_cpu = m_sys_mod->get_cpu_percent();
+
+                if (m_mode == IslandMode::Expanded_System) {
+                    render_current_state();
+                } else if (m_mode == IslandMode::Idle && old_cpu != new_cpu) {
+                    render_current_state();
+                }
             }
         }
 
