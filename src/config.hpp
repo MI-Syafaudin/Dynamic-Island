@@ -62,6 +62,7 @@ struct MonitorSettings {
     std::string thermal_path = "";
     std::string ping_target = "1.1.1.1";
     std::string ping_label = "Cloudflare";
+    std::string disk_path = "/";
 };
 
 class Config {

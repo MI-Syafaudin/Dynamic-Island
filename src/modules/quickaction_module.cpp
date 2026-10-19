@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <cstring>
+#include <sys/stat.h>
 
 namespace di {
 
@@ -432,6 +433,7 @@ void QuickActionModule::query_states() {
         eye_active = is_proc_running({"hyprsunset", "wlsunset", "gammastep"});
     }
     m_night_active.store(eye_active);
+    m_current_shader_step.store(eye_active ? 6 : 0);
 }
 
 void QuickActionModule::get_preferred_dimensions(PangoFontDescription* font_desc, const Config& config, double& w, double& h, cairo_t* cr) {
@@ -643,6 +645,53 @@ void QuickActionModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_de
     cairo_paint_with_alpha(cr, alpha);
 }
 
+void QuickActionModule::ensure_shaders_generated() {
+    if (!m_shader_dir.empty()) return;
+
+    // Use RAM-backed /dev/shm for sub-microsecond zero-I/O access, falling back to /tmp
+    std::string base_dir = "/dev/shm/dynamic-island-shaders";
+    if (mkdir(base_dir.c_str(), 0755) != 0 && errno != EEXIST) {
+        base_dir = "/tmp/dynamic-island-shaders";
+        mkdir(base_dir.c_str(), 0755);
+    }
+    m_shader_dir = base_dir;
+
+    constexpr int STEPS = 6;
+    constexpr double G_TARGET = 0.88;
+    constexpr double B_TARGET = 0.68;
+
+    for (int i = 1; i <= STEPS; ++i) {
+        double frac = static_cast<double>(i) / STEPS;
+        double g_val = 1.0 - (1.0 - G_TARGET) * frac;
+        double b_val = 1.0 - (1.0 - B_TARGET) * frac;
+
+        std::string path = m_shader_dir + "/step_" + std::to_string(i) + ".frag";
+        FILE* f = fopen(path.c_str(), "w");
+        if (f) {
+            fprintf(f,
+                "#version 300 es\n"
+                "precision highp float;\n"
+                "in vec2 v_texcoord;\n"
+                "out vec4 fragColor;\n"
+                "uniform sampler2D tex;\n"
+                "void main() {\n"
+                "    vec4 pixColor = texture(tex, v_texcoord);\n"
+                "    fragColor = vec4(pixColor.r, pixColor.g * %.4f, pixColor.b * %.4f, 1.0);\n"
+                "}\n",
+                g_val, b_val
+            );
+            fclose(f);
+        }
+    }
+}
+
+std::string QuickActionModule::get_step_shader_path(int step) {
+    if (m_shader_dir.empty()) {
+        ensure_shaders_generated();
+    }
+    return m_shader_dir + "/step_" + std::to_string(step) + ".frag";
+}
+
 std::string QuickActionModule::get_shader_path() const {
     const char* home = std::getenv("HOME");
     std::string home_str = home ? home : "";
@@ -664,56 +713,46 @@ std::string QuickActionModule::get_shader_path() const {
 void QuickActionModule::set_eye_comfort(bool enable) {
     m_night_active.store(enable);
 
-    if (enable) {
-        std::string shader = get_shader_path();
-        bool applied = false;
+    uint64_t current_seq = ++m_eye_transition_seq;
 
-        if (!shader.empty()) {
-            // 1. Try Hyprland 0.56+ Lua eval over native Unix socket (0 forks, sub-millisecond)
-            // Note: damage_tracking is set to 0 while shader is active to completely prevent
-            // buffer-swap flickering, color blinking, and stuttering across KMS scanout planes
-            std::string lua_cmd = "eval hl.config({ decoration = { screen_shader = \"" + shader + "\" }, debug = { damage_tracking = 0 } })";
-            std::string resp = HyprlandIpc::request(lua_cmd);
-            if (resp == "ok") {
-                applied = true;
-            } else {
-                // 2. Try legacy Hyprland keyword
-                std::string kw_cmd = "keyword decoration:screen_shader " + shader + "; keyword debug:damage_tracking 0";
-                std::string kw_resp = HyprlandIpc::request(kw_cmd);
-                if (kw_resp.find("ok") != std::string::npos || (kw_resp.empty() && access(shader.c_str(), R_OK) == 0)) {
-                    applied = true;
-                }
+    // Asynchronous smooth progressive fade without blocking the main event loop
+    // Never touches debug:damage_tracking to avoid compositor ring-buffer recreations and edge blink
+    std::thread([this, enable, current_seq]() {
+        ensure_shaders_generated();
+
+        int start_step = m_current_shader_step.load();
+
+        if (enable) {
+            int from = std::clamp(start_step + 1, 1, 6);
+            for (int i = from; i <= 6; ++i) {
+                if (m_eye_transition_seq.load() != current_seq) return;
+                std::string path = get_step_shader_path(i);
+                std::string lua_cmd = "eval hl.config({ decoration = { screen_shader = \"" + path + "\" } })";
+                HyprlandIpc::request(lua_cmd);
+                m_current_shader_step.store(i);
+                std::this_thread::sleep_for(std::chrono::milliseconds(25));
             }
-        }
-
-        // 3. Fallback: if Hyprland shader wasn't applied, check for standalone sunset utilities
-        if (!applied) {
-            if (m_config && !m_config->nightlight_binary.empty()) {
-                std::string cmd = m_config->nightlight_binary + " --temperature 4500 &";
-                if (m_config->nightlight_binary.find("wlsunset") != std::string::npos) {
-                    cmd = m_config->nightlight_binary + " -t 4500 &";
-                } else if (m_config->nightlight_binary.find("gammastep") != std::string::npos) {
-                    cmd = m_config->nightlight_binary + " -O 4500 &";
-                }
-                std::system(cmd.c_str());
-            } else {
-                std::system("if command -v hyprsunset >/dev/null 2>&1; then hyprsunset --temperature 4500 & "
-                            "elif command -v wlsunset >/dev/null 2>&1; then wlsunset -t 4500 & "
-                            "elif command -v gammastep >/dev/null 2>&1; then gammastep -O 4500 & "
-                            "fi &");
+        } else {
+            int from = std::clamp(start_step > 0 ? start_step - 1 : 0, 0, 5);
+            for (int i = from; i >= 1; --i) {
+                if (m_eye_transition_seq.load() != current_seq) return;
+                std::string path = get_step_shader_path(i);
+                std::string lua_cmd = "eval hl.config({ decoration = { screen_shader = \"" + path + "\" } })";
+                HyprlandIpc::request(lua_cmd);
+                m_current_shader_step.store(i);
+                std::this_thread::sleep_for(std::chrono::milliseconds(25));
             }
-        }
-    } else {
-        // Disabling Eye Comfort:
-        // 1. Reset Hyprland screen_shader and restore default damage_tracking = 2 via Lua eval & keyword
-        HyprlandIpc::request("eval hl.config({ decoration = { screen_shader = \"\" }, debug = { damage_tracking = 2 } })");
-        HyprlandIpc::request("keyword decoration:screen_shader \"\"; keyword debug:damage_tracking 2");
+            if (m_eye_transition_seq.load() == current_seq) {
+                HyprlandIpc::request("eval hl.config({ decoration = { screen_shader = \"\" } })");
+                m_current_shader_step.store(0);
+            }
 
-        // 2. Kill standalone daemons if running
-        std::system("pkill -x hyprsunset >/dev/null 2>&1; "
-                    "pkill -x wlsunset >/dev/null 2>&1; "
-                    "pkill -x gammastep >/dev/null 2>&1 &");
-    }
+            // Fallback daemon cleanup if any were running
+            std::system("pkill -x hyprsunset >/dev/null 2>&1; "
+                        "pkill -x wlsunset >/dev/null 2>&1; "
+                        "pkill -x gammastep >/dev/null 2>&1 &");
+        }
+    }).detach();
 }
 
 void QuickActionModule::set_dark_mode(bool enable) {

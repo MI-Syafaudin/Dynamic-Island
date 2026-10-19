@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <cstring>
+#include <sys/statvfs.h>
 
 namespace di {
 
@@ -36,11 +37,12 @@ SystemModule::SystemModule() {
         }
     }
 
-    // Seed initial CPU sample
+    // Seed initial samples
     update_cpu();
     update_ram();
     update_gpu();
     update_temp();
+    update_disk();
 }
 
 void SystemModule::detect_gpu_sysfs() {
@@ -99,7 +101,7 @@ void SystemModule::detect_gpu_sysfs() {
     }
 }
 
-void SystemModule::configure(double cpu_alpha, double gpu_alpha, const std::string& gpu_name_override, const std::string& temp_path_override) {
+void SystemModule::configure(double cpu_alpha, double gpu_alpha, const std::string& gpu_name_override, const std::string& temp_path_override, const std::string& disk_path_override) {
     m_cpu_smoothing_alpha = std::clamp(cpu_alpha, 0.05, 1.0);
     m_gpu_smoothing_alpha = std::clamp(gpu_alpha, 0.05, 1.0);
 
@@ -114,6 +116,11 @@ void SystemModule::configure(double cpu_alpha, double gpu_alpha, const std::stri
             m_fd_temp = -1;
         }
         m_fd_temp = open(m_temp_path.c_str(), O_RDONLY | O_CLOEXEC);
+    }
+
+    if (!disk_path_override.empty()) {
+        m_disk_path = disk_path_override;
+        update_disk();
     }
 }
 
@@ -299,12 +306,29 @@ void SystemModule::update_temp() {
     }
 }
 
+void SystemModule::update_disk() {
+    struct statvfs svfs;
+    if (statvfs(m_disk_path.c_str(), &svfs) == 0) {
+        unsigned long long total_bytes = static_cast<unsigned long long>(svfs.f_blocks) * svfs.f_frsize;
+        unsigned long long avail_bytes = static_cast<unsigned long long>(svfs.f_bavail) * svfs.f_frsize;
+        unsigned long long free_bytes = static_cast<unsigned long long>(svfs.f_bfree) * svfs.f_frsize;
+        unsigned long long used_bytes = (total_bytes >= free_bytes) ? (total_bytes - free_bytes) : 0;
+        unsigned long long nonroot_total = used_bytes + avail_bytes;
+        if (nonroot_total > 0) {
+            m_disk_percent = std::clamp(static_cast<int>(std::round((used_bytes * 100.0) / nonroot_total)), 0, 100);
+            m_disk_used_gb = used_bytes / (1024.0 * 1024.0 * 1024.0);
+            m_disk_total_gb = nonroot_total / (1024.0 * 1024.0 * 1024.0);
+        }
+    }
+}
+
 void SystemModule::update(bool full) {
     update_cpu();
     if (full) {
         update_ram();
         update_gpu();
         update_temp();
+        update_disk();
     }
 }
 
@@ -399,10 +423,26 @@ void SystemModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, c
     // Row 4: GPU
     draw_metric_row(102, "󰢮 GPU", m_gpu_percent, m_gpu_name, config.colors.warning);
 
+    // Row 5: DISK
+    std::stringstream disk_ss;
+    disk_ss << "(" << std::fixed << std::setprecision(1) << m_disk_used_gb << " / " << m_disk_total_gb << " GB)";
+    ColorRGBA disk_col = (m_disk_percent >= 90) ? config.colors.danger
+                       : (m_disk_percent >= 75) ? config.colors.warning
+                       : config.colors.accent;
+    draw_metric_row(132, "󰋊 DISK", m_disk_percent, disk_ss.str(), disk_col);
+
     g_object_unref(layout);
 
     // Click anywhere to collapse
     hitboxes.push_back({0, 0, w, h, "collapse", ""});
+}
+
+void SystemModule::get_preferred_dimensions(PangoFontDescription* font_desc, const Config& config, double& w, double& h, cairo_t* cr) {
+    (void)font_desc;
+    (void)config;
+    (void)cr;
+    w = 340.0;
+    h = 168.0;
 }
 
 } // namespace di

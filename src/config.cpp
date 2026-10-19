@@ -376,6 +376,7 @@ bool Config::load_from_file(const std::string& path) {
         monitor.thermal_path = get_lua_string(L, "thermal_path", monitor.thermal_path);
         monitor.ping_target = get_lua_string(L, "ping_target", monitor.ping_target);
         monitor.ping_label = get_lua_string(L, "ping_label", monitor.ping_label);
+        monitor.disk_path = get_lua_string(L, "disk_path", monitor.disk_path);
     }
     lua_pop(L, 1);
 

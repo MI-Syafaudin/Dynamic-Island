@@ -19,6 +19,53 @@ static std::string to_lower_str(std::string str) {
     return str;
 }
 
+static std::string truncate_utf8_ellipsis(std::string_view str, size_t max_chars) {
+    size_t count = 0;
+    size_t byte_idx = 0;
+    size_t target_chars = (max_chars > 2) ? (max_chars - 2) : 1;
+    bool truncated = false;
+
+    while (byte_idx < str.size()) {
+        if (count >= max_chars) {
+            truncated = true;
+            break;
+        }
+        unsigned char c = static_cast<unsigned char>(str[byte_idx]);
+        size_t len = 1;
+        if ((c & 0x80) == 0) len = 1;
+        else if ((c & 0xE0) == 0xC0) len = 2;
+        else if ((c & 0xF0) == 0xE0) len = 3;
+        else if ((c & 0xF8) == 0xF0) len = 4;
+
+        if (byte_idx + len > str.size()) break;
+        byte_idx += len;
+        count++;
+    }
+
+    if (!truncated) return std::string(str);
+
+    count = 0;
+    byte_idx = 0;
+    while (byte_idx < str.size() && count < target_chars) {
+        unsigned char c = static_cast<unsigned char>(str[byte_idx]);
+        size_t len = 1;
+        if ((c & 0x80) == 0) len = 1;
+        else if ((c & 0xE0) == 0xC0) len = 2;
+        else if ((c & 0xF0) == 0xE0) len = 3;
+        else if ((c & 0xF8) == 0xF0) len = 4;
+
+        if (byte_idx + len > str.size()) break;
+        byte_idx += len;
+        count++;
+    }
+
+    std::string res(str.substr(0, byte_idx));
+    while (!res.empty() && (res.back() == ' ' || res.back() == '\t')) {
+        res.pop_back();
+    }
+    return res + "..";
+}
+
 std::string WindowModule::get_app_icon(const std::string& app_class, const std::string& app_title, const Config* config) {
     std::string s = to_lower_str(app_class);
     if (s.empty()) s = to_lower_str(app_title);
@@ -96,9 +143,8 @@ void WindowModule::draw_compact(cairo_t* cr, PangoFontDescription* font_desc, co
         std::string display_name = m_class.empty() ? m_title : m_class;
         if (display_name.empty()) return;
 
-        if (config.max_window_title_length > 0 && static_cast<int>(display_name.length()) > config.max_window_title_length) {
-            int keep = std::max(1, config.max_window_title_length - 2);
-            display_name = display_name.substr(0, keep) + "..";
+        if (config.max_window_title_length > 0) {
+            display_name = truncate_utf8_ellipsis(display_name, config.max_window_title_length);
         }
 
         PangoLayout* layout = pango_cairo_create_layout(cr);
@@ -123,9 +169,8 @@ void WindowModule::draw_compact(cairo_t* cr, PangoFontDescription* font_desc, co
     std::string display_text = icon;
     if (config.window_display_mode == "both") {
         std::string name = m_class.empty() ? m_title : m_class;
-        if (config.max_window_title_length > 0 && static_cast<int>(name.length()) > config.max_window_title_length) {
-            int keep = std::max(1, config.max_window_title_length - 2);
-            name = name.substr(0, keep) + "..";
+        if (config.max_window_title_length > 0) {
+            name = truncate_utf8_ellipsis(name, config.max_window_title_length);
         }
         display_text += " " + name;
     }

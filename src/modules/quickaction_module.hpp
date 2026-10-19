@@ -60,6 +60,12 @@ private:
     std::mutex m_worker_mutex;
     std::unordered_map<std::string, double> m_label_font_sizes;
 
+    std::atomic<uint64_t> m_eye_transition_seq{0};
+    std::atomic<int> m_current_shader_step{0};
+    std::string m_shader_dir;
+
+    void ensure_shaders_generated();
+    std::string get_step_shader_path(int step);
     void query_states();
 };
 

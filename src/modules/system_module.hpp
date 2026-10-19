@@ -18,8 +18,12 @@ public:
     int get_swap_percent() const { return m_swap_percent; }
     int get_gpu_percent() const { return m_gpu_percent; }
     int get_cpu_temp() const { return m_cpu_temp; }
+    int get_disk_percent() const { return m_disk_percent; }
+    double get_disk_used_gb() const { return m_disk_used_gb; }
+    double get_disk_total_gb() const { return m_disk_total_gb; }
 
-    void configure(double cpu_alpha, double gpu_alpha, const std::string& gpu_name_override, const std::string& temp_path_override);
+    void configure(double cpu_alpha, double gpu_alpha, const std::string& gpu_name_override, const std::string& temp_path_override, const std::string& disk_path_override = "/");
+    void get_preferred_dimensions(PangoFontDescription* font_desc, const Config& config, double& w, double& h, cairo_t* cr = nullptr);
 
 private:
     int m_cpu_percent = 0;
@@ -27,11 +31,14 @@ private:
     int m_swap_percent = 0;
     int m_gpu_percent = 0;
     int m_cpu_temp = 0;
+    int m_disk_percent = 0;
 
     double m_ram_used_gb = 0.0;
     double m_ram_total_gb = 0.0;
     double m_swap_used_gb = 0.0;
     double m_swap_total_gb = 0.0;
+    double m_disk_used_gb = 0.0;
+    double m_disk_total_gb = 0.0;
     bool m_is_zram = false;
 
     double m_cpu_smoothing_alpha = 0.80;
@@ -45,6 +52,7 @@ private:
     std::string m_intel_max_freq_path;
     std::string m_gpu_name = "(Radeon Vega 3)";
     std::string m_temp_path = "/sys/class/thermal/thermal_zone0/temp";
+    std::string m_disk_path = "/";
 
     // Persistent file descriptors for zero-allocation pread()
     int m_fd_stat = -1;
@@ -59,6 +67,7 @@ private:
     void update_ram();
     void update_gpu();
     void update_temp();
+    void update_disk();
 };
 
 } // namespace di

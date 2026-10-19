@@ -73,7 +73,8 @@ int Renderer::calculate_compact_width(
         if (temp_surf) cairo_surface_destroy(temp_surf);
     }
 
-    int total_w = current_x + 4;
+    // Right margin must be 14px to match left margin (14px) and clear the 17px rounded cap curve
+    int total_w = current_x + 14;
     return total_w;
 }
 

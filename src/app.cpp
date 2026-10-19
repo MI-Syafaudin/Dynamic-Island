@@ -186,7 +186,8 @@ bool App::init(const std::string& config_path) {
             m_config.monitor.cpu_smoothing_alpha,
             m_config.monitor.gpu_smoothing_alpha,
             m_config.monitor.gpu_name,
-            m_config.monitor.thermal_path
+            m_config.monitor.thermal_path,
+            m_config.monitor.disk_path
         );
     }
     if (m_config.modules.screenshot) m_shot_mod = std::make_shared<ScreenshotModule>();
@@ -369,7 +370,7 @@ void App::update_idle_dimensions(bool animate) {
     if (m_mode != IslandMode::Idle) return;
 
     double needed_w = calculate_idle_width();
-    if (std::abs(needed_w - m_target_w) > 2.0) {
+    if (std::abs(needed_w - m_target_w) >= 1.0) {
         if (animate) {
             m_start_w = m_curr_w;
             m_start_h = m_curr_h;
@@ -407,8 +408,12 @@ void App::get_target_dimensions(IslandMode mode, double& w, double& h) {
             h = 124.0;
             break;
         case IslandMode::Expanded_System:
-            w = 340.0;
-            h = 136.0;
+            if (m_sys_mod) {
+                m_sys_mod->get_preferred_dimensions(m_renderer.get_font_desc(), m_config, w, h, m_renderer.get_measure_cr());
+            } else {
+                w = 340.0;
+                h = 168.0;
+            }
             break;
         case IslandMode::Expanded_Clock:
             w = 380.0;
@@ -548,6 +553,7 @@ void App::collapse() {
 
     m_start_w = m_curr_w;
     m_start_h = m_curr_h;
+    m_idle_width_dirty = true;
     get_target_dimensions(IslandMode::Idle, m_target_w, m_target_h);
 
     m_animating = true;
@@ -695,7 +701,8 @@ void App::on_mouse_button(double x, double y, uint32_t button, bool pressed) {
                         m_clock_mod->add_timer(mins * 60, lbl);
                     }
                     m_idle_width_dirty = true;
-                    render_current_state();
+                    if (m_mode == IslandMode::Idle) update_idle_dimensions(false);
+                    else render_current_state();
                     return;
                 }
                 if (hb.action == "time_adj" || hb.action == "set_custom_alarm" || hb.action == "set_custom_timer") {
@@ -703,7 +710,8 @@ void App::on_mouse_button(double x, double y, uint32_t button, bool pressed) {
                         m_clock_mod->handle_click(hb.action, hb.param);
                     }
                     m_idle_width_dirty = true;
-                    render_current_state();
+                    if (m_mode == IslandMode::Idle) update_idle_dimensions(false);
+                    else render_current_state();
                     return;
                 }
                 if (hb.action == "toggle_expand") {
@@ -1013,7 +1021,7 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
             if (m_clock_mod) {
                 int id = m_clock_mod->add_alarm(h, m, label);
                 m_idle_width_dirty = true;
-                if (m_mode == IslandMode::Idle) render_current_state();
+                if (m_mode == IslandMode::Idle) update_idle_dimensions(false);
                 char time_formatted[16];
                 snprintf(time_formatted, sizeof(time_formatted), "%02d:%02d", h, m);
                 return "Alarm set for " + std::string(time_formatted) + " (\"" + (label.empty() ? "Alarm" : label) + "\") [ID: " + std::to_string(id) + "]\n";
@@ -1043,7 +1051,7 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
             if (m_clock_mod) {
                 int id = m_clock_mod->add_timer(total_secs, label);
                 m_idle_width_dirty = true;
-                if (m_mode == IslandMode::Idle) render_current_state();
+                if (m_mode == IslandMode::Idle) update_idle_dimensions(false);
                 std::string dur_display;
                 if (total_secs >= 3600 && total_secs % 3600 == 0) {
                     dur_display = std::to_string(total_secs / 3600) + " hour(s)";
@@ -1060,13 +1068,13 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
             if (args.size() < 2 || args[1] == "all") {
                 if (m_clock_mod) m_clock_mod->cancel_alarm(-1);
                 m_idle_width_dirty = true;
-                if (m_mode == IslandMode::Idle) render_current_state();
+                if (m_mode == IslandMode::Idle) update_idle_dimensions(false);
                 return "All alarms canceled\n";
             }
             int id = std::atoi(args[1].c_str());
             if (m_clock_mod && m_clock_mod->cancel_alarm(id)) {
                 m_idle_width_dirty = true;
-                if (m_mode == IslandMode::Idle) render_current_state();
+                if (m_mode == IslandMode::Idle) update_idle_dimensions(false);
                 return "Alarm " + std::to_string(id) + " canceled\n";
             }
             return "Alarm ID not found\n";
@@ -1344,7 +1352,9 @@ void App::run() {
                 m_bat_mod->update();
                 if (old_pct != m_bat_mod->get_percentage() || old_chg != m_bat_mod->is_charging()) {
                     m_idle_width_dirty = true;
-                    if (m_mode == IslandMode::Idle || m_mode == IslandMode::Expanded_BatteryAlert) {
+                    if (m_mode == IslandMode::Idle) {
+                        update_idle_dimensions(false);
+                    } else if (m_mode == IslandMode::Expanded_BatteryAlert) {
                         render_current_state();
                     }
                 }
@@ -1380,7 +1390,8 @@ void App::run() {
             if (m_mode == IslandMode::Expanded_Clock) {
                 render_current_state();
             } else if (m_mode == IslandMode::Idle && clock_dirty) {
-                render_current_state();
+                m_idle_width_dirty = true;
+                update_idle_dimensions(false);
             }
         }
 
@@ -1409,7 +1420,8 @@ void App::run() {
                 if (m_mode == IslandMode::Expanded_System) {
                     render_current_state();
                 } else if (m_mode == IslandMode::Idle && old_cpu != new_cpu) {
-                    render_current_state();
+                    m_idle_width_dirty = true;
+                    update_idle_dimensions(false);
                 }
             }
         }
