@@ -1,6 +1,7 @@
 #pragma once
 
 #include "module_base.hpp"
+#include <chrono>
 
 namespace di {
 
@@ -19,11 +20,15 @@ public:
     int get_gpu_percent() const { return m_gpu_percent; }
     int get_cpu_temp() const { return m_cpu_temp; }
     int get_disk_percent() const { return m_disk_percent; }
-    double get_disk_used_gb() const { return m_disk_used_gb; }
-    double get_disk_total_gb() const { return m_disk_total_gb; }
+    double get_disk_read_speed() const { return m_disk_read_speed; }
+    double get_disk_write_speed() const { return m_disk_write_speed; }
+    double get_disk_used_gb() const { return 0.0; }
+    double get_disk_total_gb() const { return 0.0; }
 
     void configure(double cpu_alpha, double gpu_alpha, const std::string& gpu_name_override, const std::string& temp_path_override, const std::string& disk_path_override = "/");
     void get_preferred_dimensions(PangoFontDescription* font_desc, const Config& config, double& w, double& h, cairo_t* cr = nullptr);
+
+    static std::string format_io_speed(double bytes_per_sec);
 
 private:
     int m_cpu_percent = 0;
@@ -37,8 +42,8 @@ private:
     double m_ram_total_gb = 0.0;
     double m_swap_used_gb = 0.0;
     double m_swap_total_gb = 0.0;
-    double m_disk_used_gb = 0.0;
-    double m_disk_total_gb = 0.0;
+    double m_disk_read_speed = 0.0;
+    double m_disk_write_speed = 0.0;
     bool m_is_zram = false;
 
     double m_cpu_smoothing_alpha = 0.80;
@@ -53,6 +58,7 @@ private:
     std::string m_gpu_name = "(Radeon Vega 3)";
     std::string m_temp_path = "/sys/class/thermal/thermal_zone0/temp";
     std::string m_disk_path = "/";
+    std::string m_monitored_disk_name;
 
     // Persistent file descriptors for zero-allocation pread()
     int m_fd_stat = -1;
@@ -61,8 +67,16 @@ private:
     int m_fd_gpu = -1;
     int m_fd_intel_act = -1;
     int m_fd_intel_max = -1;
+    int m_fd_diskstats = -1;
+
+    unsigned long long m_prev_read_sectors = 0;
+    unsigned long long m_prev_write_sectors = 0;
+    unsigned long long m_prev_io_ms = 0;
+    std::chrono::steady_clock::time_point m_prev_disk_time;
+    bool m_disk_initialized = false;
 
     void detect_gpu_sysfs();
+    void detect_disk_device();
     void update_cpu();
     void update_ram();
     void update_gpu();

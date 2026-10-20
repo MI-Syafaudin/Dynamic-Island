@@ -128,7 +128,7 @@ config.monitor = {
     -- Override path sensor hardware (opsional, otomatis terdeteksi jika kosong)
     gpu_name       = "", -- kosong = auto-detect via sysfs
     thermal_path   = "", -- kosong = auto-detect /sys/class/thermal/thermal_zone0/temp
-    disk_path      = "/", -- mount point partisi disk yang dimonitor (default root "/")
+    disk_path      = "/", -- mount point atau device disk yang dimonitor I/O read & write (misal "/" atau "nvme0n1", default "/")
     ping_target    = "1.1.1.1",
     ping_label     = "Cloudflare",
 }

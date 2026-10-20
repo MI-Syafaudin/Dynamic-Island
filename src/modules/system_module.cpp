@@ -9,6 +9,10 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <cstring>
+#include <cctype>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <sys/statvfs.h>
 
 namespace di {
@@ -17,8 +21,10 @@ SystemModule::SystemModule() {
     m_fd_stat = open("/proc/stat", O_RDONLY | O_CLOEXEC);
     m_fd_meminfo = open("/proc/meminfo", O_RDONLY | O_CLOEXEC);
     m_fd_temp = open(m_temp_path.c_str(), O_RDONLY | O_CLOEXEC);
+    m_fd_diskstats = open("/proc/diskstats", O_RDONLY | O_CLOEXEC);
 
     detect_gpu_sysfs();
+    detect_disk_device();
 
     // Check if swap is zram
     m_is_zram = false;
@@ -101,6 +107,44 @@ void SystemModule::detect_gpu_sysfs() {
     }
 }
 
+void SystemModule::detect_disk_device() {
+    m_monitored_disk_name.clear();
+
+    if (m_disk_path.empty() || m_disk_path == "all" || m_disk_path == "system") {
+        return;
+    }
+
+    if (m_disk_path.rfind("/dev/", 0) == 0) {
+        m_monitored_disk_name = m_disk_path.substr(5);
+        return;
+    }
+
+    if (m_disk_path.find('/') == std::string::npos) {
+        m_monitored_disk_name = m_disk_path;
+        return;
+    }
+
+    struct stat st;
+    if (stat(m_disk_path.c_str(), &st) == 0) {
+        unsigned int maj = major(st.st_dev);
+        unsigned int min = minor(st.st_dev);
+
+        std::string sys_dev_path = "/sys/dev/block/" + std::to_string(maj) + ":" + std::to_string(min);
+        std::error_code ec;
+        if (std::filesystem::exists(sys_dev_path, ec)) {
+            std::filesystem::path real_path = std::filesystem::canonical(sys_dev_path, ec);
+            if (!ec) {
+                std::filesystem::path parent = real_path.parent_path();
+                if (std::filesystem::exists(parent / "stat", ec)) {
+                    m_monitored_disk_name = parent.filename().string();
+                } else {
+                    m_monitored_disk_name = real_path.filename().string();
+                }
+            }
+        }
+    }
+}
+
 void SystemModule::configure(double cpu_alpha, double gpu_alpha, const std::string& gpu_name_override, const std::string& temp_path_override, const std::string& disk_path_override) {
     m_cpu_smoothing_alpha = std::clamp(cpu_alpha, 0.05, 1.0);
     m_gpu_smoothing_alpha = std::clamp(gpu_alpha, 0.05, 1.0);
@@ -118,8 +162,11 @@ void SystemModule::configure(double cpu_alpha, double gpu_alpha, const std::stri
         m_fd_temp = open(m_temp_path.c_str(), O_RDONLY | O_CLOEXEC);
     }
 
-    if (!disk_path_override.empty()) {
+    if (!disk_path_override.empty() && disk_path_override != m_disk_path) {
         m_disk_path = disk_path_override;
+        detect_disk_device();
+        m_disk_initialized = false;
+        m_prev_disk_time = {};
         update_disk();
     }
 }
@@ -148,6 +195,10 @@ SystemModule::~SystemModule() {
     if (m_fd_intel_max >= 0) {
         close(m_fd_intel_max);
         m_fd_intel_max = -1;
+    }
+    if (m_fd_diskstats >= 0) {
+        close(m_fd_diskstats);
+        m_fd_diskstats = -1;
     }
 }
 
@@ -306,29 +357,212 @@ void SystemModule::update_temp() {
     }
 }
 
-void SystemModule::update_disk() {
-    struct statvfs svfs;
-    if (statvfs(m_disk_path.c_str(), &svfs) == 0) {
-        unsigned long long total_bytes = static_cast<unsigned long long>(svfs.f_blocks) * svfs.f_frsize;
-        unsigned long long avail_bytes = static_cast<unsigned long long>(svfs.f_bavail) * svfs.f_frsize;
-        unsigned long long free_bytes = static_cast<unsigned long long>(svfs.f_bfree) * svfs.f_frsize;
-        unsigned long long used_bytes = (total_bytes >= free_bytes) ? (total_bytes - free_bytes) : 0;
-        unsigned long long nonroot_total = used_bytes + avail_bytes;
-        if (nonroot_total > 0) {
-            m_disk_percent = std::clamp(static_cast<int>(std::round((used_bytes * 100.0) / nonroot_total)), 0, 100);
-            m_disk_used_gb = used_bytes / (1024.0 * 1024.0 * 1024.0);
-            m_disk_total_gb = nonroot_total / (1024.0 * 1024.0 * 1024.0);
+static bool is_physical_disk(const std::string& name) {
+    if (name.size() >= 3 && name[0] == 's' && name[1] == 'd') {
+        for (size_t i = 2; i < name.size(); ++i) {
+            if (!std::islower(static_cast<unsigned char>(name[i]))) return false;
         }
+        return true;
     }
+    if (name.size() >= 3 && name[0] == 'v' && name[1] == 'd') {
+        for (size_t i = 2; i < name.size(); ++i) {
+            if (!std::islower(static_cast<unsigned char>(name[i]))) return false;
+        }
+        return true;
+    }
+    if (name.size() >= 3 && name[0] == 'h' && name[1] == 'd') {
+        for (size_t i = 2; i < name.size(); ++i) {
+            if (!std::islower(static_cast<unsigned char>(name[i]))) return false;
+        }
+        return true;
+    }
+    if (name.size() >= 4 && name[0] == 'x' && name[1] == 'v' && name[2] == 'd') {
+        for (size_t i = 3; i < name.size(); ++i) {
+            if (!std::islower(static_cast<unsigned char>(name[i]))) return false;
+        }
+        return true;
+    }
+    if (name.rfind("nvme", 0) == 0 && name.find('n') != std::string::npos && name.find('p') == std::string::npos) {
+        return true;
+    }
+    if (name.rfind("mmcblk", 0) == 0 && name.find('p') == std::string::npos) {
+        return true;
+    }
+    return false;
+}
+
+void SystemModule::update_disk() {
+    if (m_fd_diskstats < 0) {
+        m_fd_diskstats = open("/proc/diskstats", O_RDONLY | O_CLOEXEC);
+        if (m_fd_diskstats < 0) return;
+    }
+
+    char buf[8192];
+    ssize_t bytes_read = pread(m_fd_diskstats, buf, sizeof(buf) - 1, 0);
+    if (bytes_read <= 0) return;
+    buf[bytes_read] = '\0';
+
+    auto now = std::chrono::steady_clock::now();
+
+    unsigned long long target_sec_read = 0;
+    unsigned long long target_sec_write = 0;
+    unsigned long long target_io_ms = 0;
+    bool found_target = false;
+
+    unsigned long long phys_sec_read = 0;
+    unsigned long long phys_sec_write = 0;
+    unsigned long long phys_io_ms = 0;
+    int phys_count = 0;
+
+    char* cur = buf;
+    while (cur && *cur) {
+        char* next = strchr(cur, '\n');
+        if (next) *next = '\0';
+
+        int maj = 0, min = 0;
+        char dev_buf[64] = {0};
+        unsigned long long reads_compl = 0, reads_merged = 0, sec_read = 0, read_ms = 0;
+        unsigned long long writes_compl = 0, writes_merged = 0, sec_write = 0, write_ms = 0;
+        unsigned long long in_flight = 0, io_ms = 0;
+
+        int parsed = sscanf(cur, "%d %d %63s %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu",
+                            &maj, &min, dev_buf,
+                            &reads_compl, &reads_merged, &sec_read, &read_ms,
+                            &writes_compl, &writes_merged, &sec_write, &write_ms,
+                            &in_flight, &io_ms);
+
+        if (parsed >= 13) {
+            std::string dname(dev_buf);
+            if (!m_monitored_disk_name.empty() && dname == m_monitored_disk_name) {
+                target_sec_read = sec_read;
+                target_sec_write = sec_write;
+                target_io_ms = io_ms;
+                found_target = true;
+            }
+
+            if (is_physical_disk(dname)) {
+                phys_sec_read += sec_read;
+                phys_sec_write += sec_write;
+                phys_io_ms += io_ms;
+                phys_count++;
+            }
+        }
+
+        if (next) cur = next + 1;
+        else break;
+    }
+
+    unsigned long long curr_sec_read = 0;
+    unsigned long long curr_sec_write = 0;
+    unsigned long long curr_io_ms = 0;
+    int divisor = 1;
+
+    if (found_target) {
+        curr_sec_read = target_sec_read;
+        curr_sec_write = target_sec_write;
+        curr_io_ms = target_io_ms;
+    } else {
+        curr_sec_read = phys_sec_read;
+        curr_sec_write = phys_sec_write;
+        curr_io_ms = phys_io_ms;
+        divisor = std::max(1, phys_count);
+    }
+
+    if (!m_disk_initialized || m_prev_disk_time.time_since_epoch().count() == 0) {
+        m_prev_read_sectors = curr_sec_read;
+        m_prev_write_sectors = curr_sec_write;
+        m_prev_io_ms = curr_io_ms;
+        m_prev_disk_time = now;
+        m_disk_initialized = true;
+        m_disk_percent = 0;
+        m_disk_read_speed = 0.0;
+        m_disk_write_speed = 0.0;
+        return;
+    }
+
+    double dt = std::chrono::duration<double>(now - m_prev_disk_time).count();
+    if (dt < 0.05) {
+        return; // Too early, wait for next tick
+    }
+
+    if (dt > 3.0) {
+        // Gap was too large (e.g. system suspended or long idle), reset baseline
+        m_prev_read_sectors = curr_sec_read;
+        m_prev_write_sectors = curr_sec_write;
+        m_prev_io_ms = curr_io_ms;
+        m_prev_disk_time = now;
+        return;
+    }
+
+    unsigned long long delta_read_sectors = (curr_sec_read >= m_prev_read_sectors) ? (curr_sec_read - m_prev_read_sectors) : 0;
+    unsigned long long delta_write_sectors = (curr_sec_write >= m_prev_write_sectors) ? (curr_sec_write - m_prev_write_sectors) : 0;
+    unsigned long long delta_io_ms = (curr_io_ms >= m_prev_io_ms) ? (curr_io_ms - m_prev_io_ms) : 0;
+
+    double dt_ms = dt * 1000.0;
+    double raw_util = (dt_ms > 0.0) ? ((delta_io_ms * 100.0) / (dt_ms * divisor)) : 0.0;
+    raw_util = std::clamp(raw_util, 0.0, 100.0);
+
+    // 512 bytes per sector in /proc/diskstats
+    double raw_read_speed = (delta_read_sectors * 512.0) / dt;
+    double raw_write_speed = (delta_write_sectors * 512.0) / dt;
+
+    if (m_disk_percent == 0 && raw_util > 0.0) {
+        m_disk_percent = static_cast<int>(std::round(raw_util));
+    } else {
+        m_disk_percent = std::clamp(static_cast<int>(std::round(m_cpu_smoothing_alpha * raw_util + (1.0 - m_cpu_smoothing_alpha) * m_disk_percent)), 0, 100);
+    }
+
+    if (m_disk_percent == 0 && (raw_read_speed >= 1024.0 * 500.0 || raw_write_speed >= 1024.0 * 500.0)) {
+        m_disk_percent = 1;
+    }
+
+    if (m_disk_read_speed <= 0.0 || dt > 1.5) {
+        m_disk_read_speed = raw_read_speed;
+    } else {
+        m_disk_read_speed = (raw_read_speed < 1024.0) ? raw_read_speed : (0.80 * raw_read_speed + 0.20 * m_disk_read_speed);
+    }
+
+    if (m_disk_write_speed <= 0.0 || dt > 1.5) {
+        m_disk_write_speed = raw_write_speed;
+    } else {
+        m_disk_write_speed = (raw_write_speed < 1024.0) ? raw_write_speed : (0.80 * raw_write_speed + 0.20 * m_disk_write_speed);
+    }
+
+    m_prev_read_sectors = curr_sec_read;
+    m_prev_write_sectors = curr_sec_write;
+    m_prev_io_ms = curr_io_ms;
+    m_prev_disk_time = now;
+}
+
+std::string SystemModule::format_io_speed(double bytes_per_sec) {
+    if (std::isnan(bytes_per_sec) || bytes_per_sec <= 0.0) {
+        return "0 B/s";
+    }
+    if (bytes_per_sec < 1024.0) {
+        return std::to_string(static_cast<int>(bytes_per_sec)) + " B/s";
+    }
+    if (bytes_per_sec < 1024.0 * 1024.0) {
+        std::stringstream ss;
+        ss << std::fixed << std::setprecision(bytes_per_sec < 102400.0 ? 1 : 0) << (bytes_per_sec / 1024.0) << " KB/s";
+        return ss.str();
+    }
+    if (bytes_per_sec < 1024.0 * 1024.0 * 1024.0) {
+        std::stringstream ss;
+        ss << std::fixed << std::setprecision(1) << (bytes_per_sec / (1024.0 * 1024.0)) << " MB/s";
+        return ss.str();
+    }
+    std::stringstream ss;
+    ss << std::fixed << std::setprecision(1) << (bytes_per_sec / (1024.0 * 1024.0 * 1024.0)) << " GB/s";
+    return ss.str();
 }
 
 void SystemModule::update(bool full) {
     update_cpu();
+    update_disk();
     if (full) {
         update_ram();
         update_gpu();
         update_temp();
-        update_disk();
     }
 }
 
@@ -423,11 +657,11 @@ void SystemModule::draw_expanded(cairo_t* cr, PangoFontDescription* font_desc, c
     // Row 4: GPU
     draw_metric_row(102, "󰢮 GPU", m_gpu_percent, m_gpu_name, config.colors.warning);
 
-    // Row 5: DISK
+    // Row 5: DISK (Real-time Read & Write speeds + Utilization)
     std::stringstream disk_ss;
-    disk_ss << "(" << std::fixed << std::setprecision(1) << m_disk_used_gb << " / " << m_disk_total_gb << " GB)";
+    disk_ss << "(R: " << format_io_speed(m_disk_read_speed) << " | W: " << format_io_speed(m_disk_write_speed) << ")";
     ColorRGBA disk_col = (m_disk_percent >= 90) ? config.colors.danger
-                       : (m_disk_percent >= 75) ? config.colors.warning
+                       : (m_disk_percent >= 70) ? config.colors.warning
                        : config.colors.accent;
     draw_metric_row(132, "󰋊 DISK", m_disk_percent, disk_ss.str(), disk_col);
 
@@ -441,7 +675,7 @@ void SystemModule::get_preferred_dimensions(PangoFontDescription* font_desc, con
     (void)font_desc;
     (void)config;
     (void)cr;
-    w = 340.0;
+    w = 350.0;
     h = 168.0;
 }
 
