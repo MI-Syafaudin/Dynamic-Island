@@ -1131,6 +1131,21 @@ std::string App::handle_ipc_command(const std::string& cmd, const std::vector<st
         }
         return "QuickAction module not available\n";
     }
+    if (cmd == "bluetooth" || cmd == "bt") {
+        if (m_quick_mod) {
+            std::string sub = args.empty() ? "toggle" : args[0];
+            if (sub == "on" || sub == "true" || sub == "1") {
+                m_quick_mod->set_bluetooth(true);
+            } else if (sub == "off" || sub == "false" || sub == "0") {
+                m_quick_mod->set_bluetooth(false);
+            } else {
+                m_quick_mod->set_bluetooth(!m_quick_mod->is_bt_active());
+            }
+            render_current_state();
+            return m_quick_mod->is_bt_active() ? "Bluetooth: ON\n" : "Bluetooth: OFF\n";
+        }
+        return "QuickAction module not available\n";
+    }
     if (cmd == "ping") {
         return "pong";
     }

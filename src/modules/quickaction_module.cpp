@@ -13,6 +13,7 @@
 #include <dirent.h>
 #include <cstring>
 #include <sys/stat.h>
+#include <filesystem>
 
 namespace di {
 
@@ -183,32 +184,67 @@ void QuickActionModule::update_async() {
 }
 
 void QuickActionModule::query_states() {
-    // 1. WiFi state: Check sysfs rfkill first (instantaneous microsecond read)
+    // 1. WiFi state & 2. Bluetooth state: Scan sysfs rfkill directory
     bool wifi_on = false;
     bool found_rfkill_wlan = false;
-    for (int i = 0; i < 16; ++i) {
-        std::string path_type = "/sys/class/rfkill/rfkill" + std::to_string(i) + "/type";
-        std::string path_soft = "/sys/class/rfkill/rfkill" + std::to_string(i) + "/soft";
-        FILE* tf = fopen(path_type.c_str(), "r");
-        if (tf) {
-            char tbuf[32];
-            if (fgets(tbuf, sizeof(tbuf), tf)) {
-                if (std::string(tbuf).find("wlan") != std::string::npos) {
-                    found_rfkill_wlan = true;
-                    FILE* sf = fopen(path_soft.c_str(), "r");
-                    if (sf) {
-                        char sbuf[16];
-                        if (fgets(sbuf, sizeof(sbuf), sf) && sbuf[0] == '0') {
-                            wifi_on = true;
+    bool rfkill_wlan_blocked = false;
+
+    bool bt_on = false;
+    bool rfkill_bt_blocked = false;
+
+    std::error_code ec;
+    if (std::filesystem::exists("/sys/class/rfkill", ec)) {
+        for (const auto& entry : std::filesystem::directory_iterator("/sys/class/rfkill", ec)) {
+            std::string p = entry.path().string();
+            FILE* tf = fopen((p + "/type").c_str(), "r");
+            if (tf) {
+                char tbuf[32];
+                if (fgets(tbuf, sizeof(tbuf), tf)) {
+                    if (std::strstr(tbuf, "wlan")) {
+                        found_rfkill_wlan = true;
+                        FILE* sf = fopen((p + "/soft").c_str(), "r");
+                        if (sf) {
+                            char sbuf[16];
+                            if (fgets(sbuf, sizeof(sbuf), sf) && sbuf[0] != '0') {
+                                rfkill_wlan_blocked = true;
+                            }
+                            fclose(sf);
                         }
-                        fclose(sf);
+                        FILE* hf = fopen((p + "/hard").c_str(), "r");
+                        if (hf) {
+                            char hbuf[16];
+                            if (fgets(hbuf, sizeof(hbuf), hf) && hbuf[0] != '0') {
+                                rfkill_wlan_blocked = true;
+                            }
+                            fclose(hf);
+                        }
+                    } else if (std::strstr(tbuf, "bluetooth")) {
+                        FILE* sf = fopen((p + "/soft").c_str(), "r");
+                        if (sf) {
+                            char sbuf[16];
+                            if (fgets(sbuf, sizeof(sbuf), sf) && sbuf[0] != '0') {
+                                rfkill_bt_blocked = true;
+                            }
+                            fclose(sf);
+                        }
+                        FILE* hf = fopen((p + "/hard").c_str(), "r");
+                        if (hf) {
+                            char hbuf[16];
+                            if (fgets(hbuf, sizeof(hbuf), hf) && hbuf[0] != '0') {
+                                rfkill_bt_blocked = true;
+                            }
+                            fclose(hf);
+                        }
                     }
                 }
+                fclose(tf);
             }
-            fclose(tf);
         }
     }
-    if (!found_rfkill_wlan) {
+
+    if (found_rfkill_wlan) {
+        wifi_on = !rfkill_wlan_blocked;
+    } else {
         FILE* fp = popen("nmcli radio wifi 2>/dev/null", "r");
         if (fp) {
             char buf[64];
@@ -221,49 +257,38 @@ void QuickActionModule::query_states() {
     }
     m_wifi_active.store(wifi_on);
 
-    // 2. Bluetooth state: Check sysfs rfkill first (instantaneous microsecond read)
-    bool bt_on = false;
-    bool found_rfkill_bt = false;
-    for (int i = 0; i < 16; ++i) {
-        std::string path_type = "/sys/class/rfkill/rfkill" + std::to_string(i) + "/type";
-        std::string path_soft = "/sys/class/rfkill/rfkill" + std::to_string(i) + "/soft";
-        FILE* tf = fopen(path_type.c_str(), "r");
-        if (tf) {
-            char tbuf[32];
-            if (fgets(tbuf, sizeof(tbuf), tf)) {
-                if (std::string(tbuf).find("bluetooth") != std::string::npos) {
-                    found_rfkill_bt = true;
-                    FILE* sf = fopen(path_soft.c_str(), "r");
-                    if (sf) {
-                        char sbuf[16];
-                        if (fgets(sbuf, sizeof(sbuf), sf) && sbuf[0] == '0') {
-                            bt_on = true;
-                        }
-                        fclose(sf);
-                    }
-                }
-            }
-            fclose(tf);
-        }
-    }
-    if (!found_rfkill_bt) {
+    // Bluetooth state determination:
+    // If any rfkill switch is soft/hard blocked, Bluetooth cannot be active (softban active).
+    // If no rfkill switch is blocked (or no rfkill found), check BlueZ controller power status.
+    if (!rfkill_bt_blocked) {
         FILE* fp = popen("bluetoothctl show 2>/dev/null", "r");
         if (fp) {
             char buf[256];
             while (fgets(buf, sizeof(buf), fp)) {
-                std::string line = buf;
-                if (line.find("Powered: yes") != std::string::npos) {
+                if (std::strstr(buf, "Powered: yes")) {
                     bt_on = true;
-                    break;
-                } else if (line.find("Powered: no") != std::string::npos) {
-                    bt_on = false;
                     break;
                 }
             }
             pclose(fp);
         }
+    } else {
+        bt_on = false;
     }
-    m_bt_active.store(bt_on);
+
+    // Debounce / synchronize with user-triggered action:
+    // Avoid overriding user click during transition window (< 1.5 seconds)
+    auto now = std::chrono::steady_clock::now();
+    bool recently_toggled = (std::chrono::duration_cast<std::chrono::milliseconds>(now - m_bt_last_toggle).count() < 1500);
+    if (m_bt_transitioning.load() || recently_toggled) {
+        if (bt_on == m_bt_active.load()) {
+            m_bt_transitioning.store(false);
+        } else {
+            bt_on = m_bt_active.load();
+        }
+    } else {
+        m_bt_active.store(bt_on);
+    }
 
     std::string bt_icon_val = "󰂲";
     std::string bt_label_val = "Bluetooth";
@@ -797,6 +822,62 @@ void QuickActionModule::set_dark_mode(bool enable) {
     }
 }
 
+void QuickActionModule::set_bluetooth(bool enable) {
+    m_bt_active.store(enable);
+    m_bt_last_toggle = std::chrono::steady_clock::now();
+    m_bt_transitioning.store(true);
+    {
+        std::lock_guard<std::mutex> lock(m_bt_info_mutex);
+        m_bt_icon = enable ? "󰂯" : "󰂲";
+        m_bt_label = "Bluetooth";
+    }
+
+    uint64_t current_seq = ++m_bt_transition_seq;
+
+    std::thread([this, enable, current_seq]() {
+        if (enable) {
+            // 1. Clear any rfkill softban across all bluetooth devices
+            std::system("rfkill unblock bluetooth 2>/dev/null");
+
+            // 2. Ensure BlueZ controller is powered on (retry if busy during initialization)
+            for (int attempt = 0; attempt < 8; ++attempt) {
+                if (m_bt_transition_seq.load() != current_seq) return;
+
+                FILE* fp = popen("bluetoothctl show 2>/dev/null", "r");
+                bool is_powered = false;
+                if (fp) {
+                    char buf[256];
+                    while (fgets(buf, sizeof(buf), fp)) {
+                        if (std::strstr(buf, "Powered: yes")) {
+                            is_powered = true;
+                            break;
+                        }
+                    }
+                    pclose(fp);
+                }
+
+                if (is_powered) break;
+
+                std::system("bluetoothctl power on >/dev/null 2>&1");
+                std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            }
+        } else {
+            // 1. Power off BlueZ adapter
+            std::system("bluetoothctl power off >/dev/null 2>&1");
+            // 2. Block rfkill to ensure physical radio transmitter is completely shut off
+            std::system("rfkill block bluetooth 2>/dev/null");
+        }
+
+        if (m_bt_transition_seq.load() != current_seq) return;
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        m_bt_transitioning.store(false);
+
+        // Update states and query active bluetooth device info
+        query_states();
+    }).detach();
+}
+
 bool QuickActionModule::handle_click(const std::string& action, const std::string& param) {
     (void)param;
     if (action == "qa_wifi") {
@@ -810,18 +891,7 @@ bool QuickActionModule::handle_click(const std::string& action, const std::strin
         return true;
     }
     if (action == "qa_bt") {
-        bool new_val = !m_bt_active.load();
-        m_bt_active.store(new_val);
-        {
-            std::lock_guard<std::mutex> lock(m_bt_info_mutex);
-            m_bt_icon = new_val ? "󰂯" : "󰂲";
-            m_bt_label = "Bluetooth";
-        }
-        if (new_val) {
-            std::system("bluetoothctl power on &");
-        } else {
-            std::system("bluetoothctl power off &");
-        }
+        set_bluetooth(!m_bt_active.load());
         return true;
     }
     if (action == "qa_mute") {

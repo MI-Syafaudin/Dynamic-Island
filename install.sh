@@ -67,6 +67,8 @@ check_cmd grim "grim"
 check_cmd slurp "slurp"
 check_cmd wl-copy "wl-clipboard"
 check_cmd brightnessctl "brightnessctl"
+check_cmd rfkill "util-linux"
+check_cmd bluetoothctl "bluez-utils"
 
 if [ ${#MISSING_PKGS[@]} -gt 0 ]; then
     # Deduplicate

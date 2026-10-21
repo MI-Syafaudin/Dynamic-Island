@@ -6,6 +6,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <chrono>
 
 namespace di {
 
@@ -41,6 +42,7 @@ public:
 
     void set_dark_mode(bool enable);
     void set_eye_comfort(bool enable);
+    void set_bluetooth(bool enable);
 
 private:
     const Config* m_config = nullptr;
@@ -54,6 +56,10 @@ private:
     mutable std::mutex m_bt_info_mutex;
     std::string m_bt_icon{"󰂲"};
     std::string m_bt_label{"Bluetooth"};
+
+    std::atomic<bool> m_bt_transitioning{false};
+    std::atomic<uint64_t> m_bt_transition_seq{0};
+    std::chrono::steady_clock::time_point m_bt_last_toggle{};
 
     std::atomic<bool> m_updating{false};
     std::thread m_worker_thread;
