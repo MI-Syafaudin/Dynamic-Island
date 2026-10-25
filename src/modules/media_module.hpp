@@ -7,6 +7,8 @@
 #include <condition_variable>
 #include <atomic>
 #include <string>
+#include <cairo/cairo.h>
+#include <gdk-pixbuf/gdk-pixbuf.h>
 
 namespace di {
 
@@ -40,6 +42,18 @@ public:
         std::lock_guard<std::mutex> lock(m_mutex);
         return m_artist;
     }
+    std::string get_platform_name() const {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_platform_name;
+    }
+    std::string get_platform_icon() const {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_platform_icon;
+    }
+    ColorRGBA get_platform_color() const {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_platform_color;
+    }
 
     void play_pause();
     void next_track();
@@ -54,13 +68,22 @@ private:
     std::string m_title;
     std::string m_artist;
     std::string m_player_name;
+    std::string m_url;
+    std::string m_art_url;
+    std::string m_last_art_url;
+
+    std::string m_platform_name = "Media";
+    std::string m_platform_icon = "󰝚";
+    ColorRGBA m_platform_color{0.8, 0.8, 0.8, 1.0};
+
+    cairo_surface_t* m_cover_surface = nullptr;
 
     std::string m_last_title;
     std::string m_last_artist;
     std::chrono::steady_clock::time_point m_anim_start_time;
     bool m_needs_marquee = false;
 
-    // Worker thread for background playerctl queries
+    // Worker thread for background playerctl queries & cover art decoding
     std::thread m_worker_thread;
     std::mutex m_worker_mutex;
     std::condition_variable m_worker_cv;
@@ -70,6 +93,10 @@ private:
     void worker_loop();
     void query_mpris();
     void trigger_async_query();
+    void detect_platform(const std::string& player_name, const std::string& url, const std::string& art_url);
+    void load_cover_art_worker(const std::string& art_url);
+    static cairo_surface_t* pixbuf_to_cairo_surface(GdkPixbuf* pixbuf);
+
     void draw_marquee_text(
         cairo_t* cr,
         PangoFontDescription* font_desc,

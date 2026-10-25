@@ -3,7 +3,7 @@ CC ?= gcc
 CXXFLAGS ?= -std=c++20 -O3 -flto -Wall -Wextra -pthread
 CFLAGS ?= -O3 -flto -Wall
 
-PKG_DEPS = wayland-client cairo pango pangocairo luajit
+PKG_DEPS = wayland-client cairo pango pangocairo luajit gdk-pixbuf-2.0
 PKG_CFLAGS = $(shell pkg-config --cflags $(PKG_DEPS))
 PKG_LIBS = $(shell pkg-config --libs $(PKG_DEPS)) -lm
 

@@ -404,8 +404,8 @@ void App::get_target_dimensions(IslandMode mode, double& w, double& h) {
             h = 48.0;
             break;
         case IslandMode::Expanded_Media:
-            w = 380.0;
-            h = 124.0;
+            w = 410.0;
+            h = 128.0;
             break;
         case IslandMode::Expanded_System:
             if (m_sys_mod) {
@@ -1446,14 +1446,17 @@ void App::run() {
         if (std::chrono::duration_cast<std::chrono::seconds>(now - m_last_media_update).count() >= media_interval_sec) {
             m_last_media_update = now;
             if (m_media_mod) {
-                std::string old_title = m_media_mod->get_title();
+                bool old_has_media = m_media_mod->has_media();
+                std::string old_platform = m_media_mod->get_platform_name();
                 std::string old_status = m_media_mod->get_status();
                 m_media_mod->update();
-                bool changed = (old_title != m_media_mod->get_title() || old_status != m_media_mod->get_status());
+                bool idle_relevant_changed = (old_has_media != m_media_mod->has_media() ||
+                                             old_platform != m_media_mod->get_platform_name() ||
+                                             old_status != m_media_mod->get_status());
 
                 if (m_mode == IslandMode::Expanded_Media) {
                     render_current_state();
-                } else if (m_mode == IslandMode::Idle && changed) {
+                } else if (m_mode == IslandMode::Idle && idle_relevant_changed) {
                     m_idle_width_dirty = true;
                     update_idle_dimensions(false);
                 }
