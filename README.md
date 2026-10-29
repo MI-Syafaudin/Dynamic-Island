@@ -4,6 +4,7 @@
 [![Author](https://img.shields.io/badge/Author-MI--Syafaudin-blue.svg)](https://github.com/MI-Syafaudin)
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Wayland%20%7C%20Hyprland-purple.svg)](https://hyprland.org)
 [![Language](https://img.shields.io/badge/C%2B%2B-20-orange.svg)](https://en.wikipedia.org/wiki/C%2B%2B20)
+[![License](https://img.shields.io/badge/License-Non--Commercial%20%2F%20Retribution-red.svg)](LICENSE)
 
 Sebuah topbar bergaya **"Dynamic Island"** (terinspirasi dari Apple Dynamic Island) yang dirancang khusus untuk Linux desktop berbasis **CachyOS / Arch Linux**, **Hyprland**, dan **Wayland**.
 
@@ -341,4 +342,19 @@ Proyek **Dynamic Island for Hyprland** dirancang dan dikembangkan oleh:
 - **Author & Pengembang Utama**: **[MI-Syafaudin](https://github.com/MI-Syafaudin)**
 - **Repository Resmi**: [https://github.com/MI-Syafaudin/Dynamic-Island](https://github.com/MI-Syafaudin/Dynamic-Island)
 - **Kredit**: Terima kasih kepada komunitas Wayland, Hyprland, dan para pengembang open-source Linux di Indonesia dan seluruh dunia.
+
+---
+
+## 11. Lisensi & Ketentuan Penggunaan (License)
+
+Proyek ini dilindungi hak cipta di bawah **Custom Source-Available & Non-Commercial License**. Silakan baca berkas [LICENSE](file:///home/syafudin/Projects/dynamic_island/LICENSE) untuk teks hukum lengkap.
+
+### Ringkasan Ketentuan:
+1. **Pemakaian Pribadi & Non-Komersial (Gratis)**:
+   - Anda bebas melakukan clone, fork, modifikasi, dan mengembangkan proyek ini untuk keperluan pribadi, eksperimen, riset, atau edukasi tanpa biaya.
+2. **Kredit & Atribusi Wajib**:
+   - Jika Anda melakukan fork atau mendistribusikan ulang kode ini (baik asli maupun hasil modifikasi), Anda **wajib mencantumkan kredit nama [MI-Syafaudin](https://github.com/MI-Syafaudin)** dan menyertakan tautan repositori asli. Dilarang menghapus informasi hak cipta asli.
+3. **Penggunaan Komersial (Wajib Retribusi / Izin Berbayar)**:
+   - Segala bentuk komersialisasi (seperti memperjualbelikan kode/binary, bundling ke OS komersial berbayar, perangkat hardware berbayar, atau integrasi ke layanan komersial/SaaS) **dilarang keras tanpa persetujuan tertulis dan pembayaran retribusi/royalti**.
+   - Untuk lisensi komersial dan kerja sama, hubungi: **[mi.syafaudin@gmail.com](mailto:mi.syafaudin@gmail.com)**.
 

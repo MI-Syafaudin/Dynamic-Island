@@ -1,0 +1,84 @@
+CUSTOM SOURCE-AVAILABLE & NON-COMMERCIAL LICENSE
+(Personal & Development Free, Commercial Retribution Required)
+
+Copyright (c) 2024-2026 MI-Syafaudin <mi.syafaudin@gmail.com>
+Repository: https://github.com/MI-Syafaudin/Dynamic-Island
+
+All rights reserved.
+
+================================================================================
+RINGKASAN LISENSI (BAHASA INDONESIA):
+1. Penggunaan Pribadi & Non-Komersial: GRATIS untuk di-clone, di-fork, dimodifikasi,
+   dan digunakan untuk keperluan pribadi, eksperimen, riset, atau edukasi.
+2. Kewajiban Atribusi (Kredit): Nama pembuat asli ("MI-Syafaudin") dan tautan repositori
+   resmi WAJIB tetap dicantumkan pada repositori hasil fork, kode sumber, maupun dokumentasi.
+3. Penggunaan Komersial: WAJIB membayar retribusi/lisensi komersial dan mendapatkan
+   izin tertulis dari pemegang hak cipta sebelum digunakan, didistribusikan, atau diintegrasikan
+   ke dalam produk/layanan berbayar atau komersial.
+================================================================================
+
+TERMS AND CONDITIONS
+
+1. DEFINITIONS
+   - "Author" / "Copyright Holder" refers to MI-Syafaudin.
+   - "Software" refers to the Dynamic Island source code, documentation, scripts,
+     assets, configurations, and binaries provided in this repository.
+   - "Derivative Work" refers to any modification, adaptation, enhancement, port,
+     fork, or translation of the Software.
+   - "Commercial Use" refers to any use, distribution, or reproduction of the Software
+     aimed at commercial advantage, monetary compensation, revenue generation, or
+     integration into paid products/services/distributions.
+
+2. GRANT OF NON-COMMERCIAL LICENSE
+   Subject to the terms and conditions of this License, the Author hereby grants you
+   a non-exclusive, worldwide, royalty-free license to:
+   a. Clone, download, fork, and inspect the source code of the Software.
+   b. Modify, customize, and extend the Software for personal, non-commercial, hobby,
+      academic, and educational purposes.
+   c. Run and operate the Software on your personal machines or non-commercial environments.
+
+3. MANDATORY ATTRIBUTION REQUIREMENT
+   In exchange for the rights granted in Section 2, you MUST satisfy the following:
+   a. Every copy, fork, mirror, redistribution, or Derivative Work of the Software
+      MUST visibly retain the original copyright notice and credit:
+      "Original Author: MI-Syafaudin (https://github.com/MI-Syafaudin/Dynamic-Island)"
+   b. You may NOT remove, alter, or obscure any copyright, author attribution, or license
+      notices present in the source files, documentation, or user interface.
+   c. In any fork or derivative work published publicly, a prominent acknowledgment of
+      the original project and author must be included in the primary README / documentation.
+
+4. COMMERCIAL USE RESTRICTIONS & RETRIBUTION REQUIREMENT
+   a. The Software and any Derivative Works thereof may NOT be used for Commercial Use
+      without prior written authorization and the payment of a commercial retribution/royalty
+      to the Author.
+   b. Commercial Use includes, but is not limited to:
+      - Selling, licensing, sublicensing, leasing, or renting the Software or any Derivative Work.
+      - Bundling the Software into commercial Linux distributions, hardware appliances,
+        OEM installations, or paid software suites.
+      - Offering paid hosting, cloud deployment, managed services, or SaaS derived from the Software.
+      - Monetizing derivatives of the Software directly or indirectly through paywalls, advertisements,
+        or paid features.
+   c. Any commercial entity or individual wishing to use, bundle, or distribute this Software
+      commercially must enter into a separate Commercial License Agreement and pay the agreed
+      retribution/licensing fee.
+
+5. COMMERCIAL INQUIRIES & LICENSING CONTACT
+   To inquire about commercial licensing, retribution rates, enterprise agreements,
+   or dual-licensing permissions, please contact:
+   - Name: MI-Syafaudin
+   - Email: mi.syafaudin@gmail.com
+   - GitHub: https://github.com/MI-Syafaudin
+
+6. TERMINATION
+   Any failure to comply with the terms of this License (including unauthorized commercial
+   use or removal of author credits) automatically terminates your rights under this License.
+   Upon termination, you must cease all use and destroy all copies of the Software in your
+   possession. Legal remedies for copyright infringement may be pursued under applicable laws.
+
+7. DISCLAIMER OF WARRANTY & LIMITATION OF LIABILITY
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+   INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+   PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHOR OR COPYRIGHT HOLDERS BE LIABLE
+   FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR
+   OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+   DEALINGS IN THE SOFTWARE.
